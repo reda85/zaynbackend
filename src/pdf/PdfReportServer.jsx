@@ -6,7 +6,7 @@ import { createTw } from "react-pdf-tailwind";
 
 const getBaseUrl = () => {
   if (typeof window !== 'undefined') return ''; // Browser - use relative paths
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`; // Vercel
+  if (process.env.VERCEL_URL) return `https://${process.env.RAILWAY_URL}`; // Vercel
   return 'http://localhost:3000'; // Development
 };
 
