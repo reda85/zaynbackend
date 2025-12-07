@@ -5,7 +5,7 @@ import express from "express";
 import cors from "cors";
 import axios from "axios";
 import { createClient } from "@supabase/supabase-js";
-import { createCanvas } from "canvas";
+import { createCanvas } from "@napi-rs/canvas";
 import React from "react";
 import { renderToStream } from "@react-pdf/renderer";
 import path from "path";
