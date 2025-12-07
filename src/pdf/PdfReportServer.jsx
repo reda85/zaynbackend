@@ -2,6 +2,7 @@
 import React from 'react';
 import { Document, Page, Text, View, Image, StyleSheet } from "@react-pdf/renderer";
 import { createTw } from "react-pdf-tailwind";
+import path from 'path';
 //import { pdfIconsMap } from "@/utils/iconsMap";
 
 const getBaseUrl = () => {
