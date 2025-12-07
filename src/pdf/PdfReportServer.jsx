@@ -12,13 +12,13 @@ const getBaseUrl = () => {
 
 
 export const pdfIconsMap = {
-  "grid": `${getBaseUrl()}/icons/grid-white.png`,
-  'zap': `${getBaseUrl()}/icons/zap-white.png`,
-  'droplets': `${getBaseUrl()}/icons/droplets-white.png`,
-  'paint': `${getBaseUrl()}/icons/paint-roller-white.png`,
-  'fire-extinguisher': `${getBaseUrl()}/icons/fire-extinguisher-white.png`,
-  'carrelage': `${getBaseUrl()}/icons/grid-white.png`,
-  'Non assigne': `${getBaseUrl()}/icons/user-x-white.png`,
+  "grid": path.join(process.cwd(), "icons/grid-white.png"),
+  "zap": path.join(process.cwd(), "icons/zap-white.png"),
+  "droplets": path.join(process.cwd(), "icons/droplets-white.png"),
+  "paint": path.join(process.cwd(), "icons/paint-roller-white.png"),
+  "fire-extinguisher": path.join(process.cwd(), "icons/fire-extinguisher-white.png"),
+  "carrelage": path.join(process.cwd(), "icons/grid-white.png"),
+  "Non assigne": path.join(process.cwd(), "icons/user-x-white.png"),
 };
 
 function PdfCategoryLabel({ category, status }) {
@@ -64,8 +64,8 @@ const tw = createTw({
 // === YOUR ICONS (use absolute URLs for server-side rendering) ===
 
 const ICONS = {
-  calendar: `${getBaseUrl()}/icons/calendar-days-stone.png`,
-  map: `${getBaseUrl()}/icons/map-stone.png`,
+  calendar: path.join(process.cwd(), "icons/calendar-days-stone.png"),
+  map: path.join(process.cwd(), "icons/map-stone.png"),
 };
 
 // === REUSABLE CATEGORY LABEL (with icon + status color) ===
