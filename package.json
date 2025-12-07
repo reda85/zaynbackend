@@ -29,9 +29,8 @@
     "pdfjs-dist": "^3.11.174",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
-    "react-pdf-tailwind": "^3.0.0"
-  },
-  "devDependencies": {
+    "react-pdf-tailwind": "^3.0.0",
     "tsx": "^4.21.0"
   }
+  
 }
