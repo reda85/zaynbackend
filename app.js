@@ -30,8 +30,16 @@ const __dirname = path.dirname(__filename);
 // ------------------------
 // Load the JSX component - we'll load it dynamically when needed since it imports ESM packages
 let PdfReportServer = null;
+let MediaComponent = null;
 
-
+async function loadMediaReportComponent() {
+  if (!MediaComponent) {
+    // When running with tsx, we can directly import JSX files
+    const module = await import("./src/pdf/MediaReportServer.jsx");
+    MediaComponent = module.default;
+  }
+  return MediaComponent;
+}
 
 async function loadPdfReportComponent() {
   if (!PdfReportServer) {
@@ -403,6 +411,183 @@ app.get("/api/report", async (req, res) => {
     }
   }
 });
+
+// ------------------------
+// API endpoint
+app.get("/api/mediareport", async (req, res) => {
+  try {
+    const { projectId, selectedIds } = req.query;
+    
+    if (!projectId || !selectedIds) {
+      return res.status(400).json({ 
+        error: "Missing required parameters: projectId and selectedIds" 
+      });
+    }
+
+    const ids = selectedIds.split(",").map(id => id.trim());
+    console.log(`Generating report for project ${projectId}, medias:`, ids);
+
+    // Fetch pins with relations - INCLUDING plans.file_url for each pin's PDF
+    const { data: medias, error: mediasError } = await supabase
+      .from("pins_photos")
+      .select(`
+        *,
+        
+        projects(*),
+        pdf_pins(*,projects(*),plans(file_url, name))
+        
+      `)
+      .eq("project_id", projectId)
+      .in("id", ids);
+    
+    if (mediasError) {
+      console.error("Supabase error fetching medias:", mediasError);
+      throw mediasError;
+    }
+    
+    if (!medias || medias.length === 0) {
+      throw new Error("No medias found for the given criteria");
+    }
+
+    console.log(`Found ${medias.length} medias`);
+
+   
+
+    // Fetch project
+    const { data: project, error: projectError } = await supabase
+      .from("projects")
+      .select("*")
+      .eq("id", projectId)
+      .single();
+    if (projectError) {
+      console.error("Supabase error fetching project:", projectError);
+      throw projectError;
+    }
+
+    // Group pins by PDF URL and render each PDF once
+    // This caches PDFs so if multiple pins share the same PDF, we only download/render once
+    const pdfCache = new Map();
+    
+    console.log("Processing PDFs and creating snapshots...");
+    
+    // Process each pin - get PDF from plans.file_url
+    const preparedMedias = await Promise.all(
+      medias.map(async (media, index) => {
+        // GET PDF PATH from plans.file_url for this specific pin
+        const filePath = media.pdf_pins?.plans?.file_url;
+        
+        if (!filePath) {
+          console.warn(`Media ${media.id} has no PDF path (plans.file_url is missing), skipping snapshot`);
+          return { ...media, snapshot: null };
+        }
+
+        // Get the public URL from Supabase Storage
+        const pdfUrl = supabase.storage
+          .from('project-plans')
+          .getPublicUrl(filePath)
+          .data.publicUrl;
+
+        console.log(`Media ${media.id} PDF URL: ${pdfUrl}`);
+
+        // Check if we've already rendered this PDF (in case multiple pins use same PDF)
+        let pdfImg = pdfCache.get(pdfUrl);
+        
+        if (!pdfImg) {
+          console.log(`Downloading and rendering new PDF for media ${media.id}`);
+          
+          try {
+            // Download the PDF from Supabase Storage
+            const pdfResponse = await axios.get(pdfUrl, { 
+              responseType: "arraybuffer",
+              timeout: 30000,
+              maxContentLength: 50 * 1024 * 1024
+            });
+            const pdfBuffer = Buffer.from(pdfResponse.data);
+            console.log(`PDF downloaded for pin ${media.id}: ${pdfBuffer.length} bytes`);
+            
+            // Render the first page to canvas
+            pdfImg = await renderPdfPage(pdfBuffer);
+            console.log(`PDF rendered for pin ${media.id}: ${pdfImg.width}x${pdfImg.height}`);
+            
+            // Cache the rendered PDF for reuse
+            pdfCache.set(pdfUrl, pdfImg);
+          } catch (error) {
+            console.error(`Failed to process PDF for media ${media.id} from ${pdfUrl}:`, error.message);
+            return { ...media, snapshot: null };
+          }
+        } else {
+          console.log(`Using cached PDF for media ${media.id}`);
+        }
+
+        console.log(`Creating snapshot ${index + 1}/${medias.length} for media ${media.id}`);
+        
+        // Check if coordinates exist (using x and y, not x_norm and y_norm)
+        if (media.pdf_pins?.x === undefined || media.pdf_pins?.y === undefined) {
+          console.warn(`Media ${media.id} missing coordinates - x: ${media.pdf_pins?.x}, y: ${media.pdf_pins?.y}`);
+          console.log(`Available media fields:`, Object.keys(media));
+          return { ...media, snapshot: null };
+        }
+        
+        try {
+          // Create snapshot from the pin's specific PDF using x and y coordinates
+          // Using 800px size for better quality
+          const snapshot = await cropZoom(pdfImg, media.pdf_pins?.x, media.pdf_pins?.y, 800);
+          return { ...media, snapshot };
+        } catch (error) {
+          console.error(`Failed to create snapshot for media ${media.id}:`, error.message);
+          return { ...media, snapshot: null };
+        }
+      })
+    );
+
+    console.log("Generating PDF report...");
+    
+    // Debug: Log snapshot info
+    console.log("Prepared medias snapshot info:");
+    preparedMedias.forEach(media => {
+      console.log(`Media ${media.id}: snapshot exists: ${!!media.snapshot}, length: ${media.snapshot?.length || 0}`);
+    });
+    
+    // Load the PDF component
+    const MediaComponent = await loadMediaReportComponent();
+    
+    const pdfStream = await renderToStream(
+      React.createElement(MediaComponent, {
+        selectedMedias: preparedMedias,
+       
+        selectedProject: project
+      })
+    );
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="report-${projectId}.pdf"`);
+    
+    pdfStream.pipe(res);
+    
+    pdfStream.on("end", () => {
+      console.log("PDF generation completed successfully");
+    });
+    
+    pdfStream.on("error", (err) => {
+      console.error("PDF stream error:", err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "PDF generation failed" });
+      }
+    });
+
+  } catch (err) {
+    console.error("PDF GENERATION ERROR:", err);
+    console.error("Error stack:", err.stack);
+    
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        error: err.message || "Internal server error",
+        details: process.env.NODE_ENV === "development" ? err.stack : undefined
+      });
+    }
+  }
+});
+
 
 // ------------------------
 // Health check endpoint
