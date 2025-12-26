@@ -199,7 +199,7 @@ export default function PdfReportServer({
                     )}
                     <View style={tw("flex-row")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Créé par:</Text>
-                      <Text style={tw("text-sm text-stone-800")}>{pin.created_by || "-"}</Text>
+                      <Text style={tw("text-sm text-stone-800")}>{pin.created_by?.name || "-"}</Text>
                     </View>
                     <View style={tw("flex-row")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Assigné à:</Text>
