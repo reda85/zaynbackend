@@ -241,6 +241,7 @@ app.get("/api/report", async (req, res) => {
         categories(*),
         Status(*),
         assigned_to(*),
+        created_by(*),
         projects(*),
         pins_photos(*),
         plans(file_url)
