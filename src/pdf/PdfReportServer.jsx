@@ -184,15 +184,15 @@ export default function PdfReportServer({
                     </View>
                   </View>
 
-                  <View style={tw("mt-3 space-y-2")}>
-                    <View style={tw("flex-row")}>
+                  <View style={tw("mt-3 my-2")}>
+                    <View style={tw("flex-row my-2")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>ID:</Text>
                       <Text style={tw("text-sm text-stone-800")}>
                         {pin.projects?.project_number}-{pin.pin_number}
                       </Text>
                     </View>
                     {pin.category_id && (
-                      <View style={tw("flex-row")}>
+                      <View style={tw("flex-row my-2")}>
                         <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Catégorie:</Text>
                         <Text style={tw("text-sm text-stone-800")}>{category?.name}</Text>
                       </View>
@@ -201,18 +201,18 @@ export default function PdfReportServer({
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Créé par:</Text>
                       <Text style={tw("text-sm text-stone-800")}>{pin.created_by?.name || "-"}</Text>
                     </View>
-                    <View style={tw("flex-row")}>
+                    <View style={tw("flex-row my-2")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Assigné à:</Text>
                       <Text style={tw("text-sm text-stone-800")}>{pin.assigned_to?.name || "-"}</Text>
                     </View>
-                    <View style={tw("flex-row items-center gap-2")}>
+                    <View style={tw("flex-row items-center my-2 mr-2")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Échéance:</Text>
                       <Image src={ICONS.calendar} style={{ width: 14, height: 14 }} />
                       <Text style={tw("text-sm text-stone-800")}>
                         {pin.due_date ? new Date(pin.due_date).toLocaleDateString("fr-FR") : "-"}
                       </Text>
                     </View>
-                    <View style={tw("flex-row")}>
+                    <View style={tw("flex-row my-2 wrap")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Description:</Text>
                       <Text style={tw("text-sm text-stone-800")}>{pin.note || "-"}</Text>
                     </View>
