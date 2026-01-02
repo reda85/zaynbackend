@@ -10,6 +10,17 @@ import React from "react";
 import { renderToStream } from "@react-pdf/renderer";
 import path from "path";
 import { fileURLToPath } from "url";
+import admin from 'firebase-admin';
+import serviceAccount from './firebase-service-account.json' assert { type: "json" };
+
+
+
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+}
+
 
 // Import pdfjs-dist for Node.js - we'll use dynamic import
 const pdfjsLib = await (async () => {
@@ -55,13 +66,18 @@ async function loadPdfReportComponent() {
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "25mb" }));
-
+app.use((req, res, next) => {
+  console.log(`Incoming request: ${req.method} ${req.url}`);
+  next();
+});
 // ------------------------
 // Supabase client
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
+
+
 
 // ------------------------
 // PDF.js worker configuration
@@ -75,6 +91,7 @@ try {
 } catch (e) {
   console.warn("PDF.js worker not configured properly:", e.message);
 }
+
 
 // ------------------------
 // Render first page to canvas
@@ -691,6 +708,351 @@ app.get("/api/test-snapshot", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+
+app.post('/api/fcm-tokens', async (req, res) => {
+  try {
+    const { userId, fcmToken, deviceId, deviceType } = req.body;
+
+    // Validate input
+    if (!userId || !fcmToken) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Save to Supabase
+    const { data, error } = await supabase
+      .from('user_fcm_tokens')
+      .upsert(
+        {
+          user_id: userId,
+          fcm_token: fcmToken,
+          device_id: deviceId,
+          device_type: deviceType,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: 'user_id,device_id',
+        }
+      )
+      .select();
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      message: 'FCM token saved',
+      data,
+    });
+  } catch (error) {
+    console.error('Error saving FCM token:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete FCM token (on logout)
+app.delete('/api/fcm-tokens/:userId/:deviceId', async (req, res) => {
+  try {
+    const { userId, deviceId } = req.params;
+
+    const { error } = await supabase
+      .from('user_fcm_tokens')
+      .delete()
+      .match({ user_id: userId, device_id: deviceId });
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      message: 'FCM token deleted',
+    });
+  } catch (error) {
+    console.error('Error deleting FCM token:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== NOTIFICATION SENDING ENDPOINTS =====
+
+// Send notification to specific user (all their devices)
+app.post('/api/notifications/send-to-user', async (req, res) => {
+  try {
+    const { userId, title, body, data } = req.body;
+
+    // Get all FCM tokens for this user
+    const { data: tokens, error } = await supabase
+      .from('user_fcm_tokens')
+      .select('fcm_token')
+      .eq('user_id', userId);
+
+    if (error) throw error;
+
+    if (!tokens || tokens.length === 0) {
+      return res.status(404).json({ error: 'No FCM tokens found for user' });
+    }
+
+    // Prepare notification payload
+    const message = {
+      notification: {
+        title,
+        body,
+      },
+      data: data || {},
+      tokens: tokens.map(t => t.fcm_token),
+    };
+
+    // Send to all user's devices
+    const response = await admin.messaging().sendEachForMulticast(message);
+
+    // Handle failed tokens (invalid/expired)
+    if (response.failureCount > 0) {
+      const failedTokens = [];
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success) {
+          failedTokens.push(tokens[idx].fcm_token);
+        }
+      });
+
+      // Remove failed tokens from database
+      if (failedTokens.length > 0) {
+        await supabase
+          .from('user_fcm_tokens')
+          .delete()
+          .in('fcm_token', failedTokens);
+      }
+    }
+
+    res.json({
+      success: true,
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+    });
+  } catch (error) {
+    console.error('Error sending notification:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Assign task and notify
+app.post('/api/tasks/assign', async (req, res) => {
+  try {
+    const { taskId, taskTitle, assignedToUserId, assignedByName } = req.body;
+
+    // 1. Save task to database
+    const { data: task, error: taskError } = await supabase
+      .from('tasks')
+      .insert({
+        id: taskId,
+        title: taskTitle,
+        assigned_to: assignedToUserId,
+        assigned_by: assignedByName,
+      })
+      .select()
+      .single();
+
+    if (taskError) throw taskError;
+
+    // 2. Get user's FCM tokens
+    const { data: tokens, error: tokensError } = await supabase
+      .from('user_fcm_tokens')
+      .select('fcm_token')
+      .eq('user_id', assignedToUserId);
+
+    if (tokensError) throw tokensError;
+
+    if (tokens && tokens.length > 0) {
+      // 3. Send notification
+      const message = {
+        notification: {
+          title: '📋 New Task Assigned!',
+          body: `${assignedByName} assigned you: ${taskTitle}`,
+        },
+        data: {
+          type: 'task_assigned',
+          taskId,
+          taskTitle,
+          assignedBy: assignedByName,
+        },
+        tokens: tokens.map(t => t.fcm_token),
+      };
+
+      const response = await admin.messaging().sendEachForMulticast(message);
+      
+      console.log(`Notification sent: ${response.successCount} success, ${response.failureCount} failed`);
+    }
+
+    res.json({
+      success: true,
+      message: 'Task assigned and notification sent',
+      task,
+    });
+  } catch (error) {
+    console.error('Error assigning task:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Assign pin and notify
+app.post('/api/pins/assign', async (req, res) => {
+  console.log('Assigning pin...');
+  try {
+    const { pinId, assignedToUserId, assignedByName } = req.body;
+
+    // 1. Save pin to database
+  /*  const { data: pin, error: pinError } = await supabase
+      .from('pins')
+      .insert({
+        id: pinId,
+        location: pinLocation,
+        assigned_to: assignedToUserId,
+        assigned_by: assignedByName,
+      })
+      .select()
+      .single();
+
+    if (pinError) throw pinError; */
+
+    // 2. Get user's FCM tokens
+
+    console.log('Assigning pin:', pinId, 'to user:', assignedToUserId);
+    const { data: tokens, error: tokensError } = await supabase
+      .from('user_fcm_tokens')
+      .select('fcm_token')
+      .eq('user_id', assignedToUserId);
+
+    if (tokensError) throw tokensError;
+console.log('Retrieved tokens:', tokens);
+console.log('pinId:', pinId, 'assignedByName:', assignedByName);
+  if (tokens && tokens.length > 0) {
+  const message = {
+    notification: {
+      title: '📍 New Pin Assigned!',
+      body: `${assignedByName} assigned you a pin `,
+    },
+    data: {
+      type: 'pin_assigned',
+      pinId,
+      assignedBy: assignedByName,
+    },
+    tokens: tokens.map(t => t.fcm_token),
+  };
+
+  try {
+    const response = await admin.messaging().sendEachForMulticast(message);
+    console.log('Notification response:', response);
+
+    if (response.failureCount > 0) {
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success) {
+          console.error(`Failed to send notification to token ${tokens[idx].fcm_token}:`, resp.error);
+        }
+      });
+    }
+
+    console.log(`Notification sent: ${response.successCount} success, ${response.failureCount} failed`);
+  } catch (err) {
+    console.error('FCM send error (exception thrown):', err);
+  }
+}
+
+
+    res.json({
+      success: true,
+      message: 'Pin assigned and notification sent',
+      pinId,
+    });
+  } catch (error) {
+    console.error('Error assigning pin:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Send notification to multiple users
+app.post('/api/notifications/send-bulk', async (req, res) => {
+  try {
+    const { userIds, title, body, data } = req.body;
+
+    // Get all FCM tokens for these users
+    const { data: tokens, error } = await supabase
+      .from('user_fcm_tokens')
+      .select('fcm_token')
+      .in('user_id', userIds);
+
+    if (error) throw error;
+
+    if (!tokens || tokens.length === 0) {
+      return res.status(404).json({ error: 'No FCM tokens found' });
+    }
+
+    const message = {
+      notification: { title, body },
+      data: data || {},
+      tokens: tokens.map(t => t.fcm_token),
+    };
+
+    const response = await admin.messaging().sendEachForMulticast(message);
+
+    res.json({
+      success: true,
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+    });
+  } catch (error) {
+    console.error('Error sending bulk notification:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Send notification with topic subscription
+app.post('/api/notifications/send-to-topic', async (req, res) => {
+  try {
+    const { topic, title, body, data } = req.body;
+
+    const message = {
+      notification: { title, body },
+      data: data || {},
+      topic,
+    };
+
+    const response = await admin.messaging().send(message);
+
+    res.json({
+      success: true,
+      messageId: response,
+    });
+  } catch (error) {
+    console.error('Error sending topic notification:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Subscribe users to topic
+app.post('/api/notifications/subscribe-to-topic', async (req, res) => {
+  try {
+    const { userIds, topic } = req.body;
+
+    // Get FCM tokens
+    const { data: tokens, error } = await supabase
+      .from('user_fcm_tokens')
+      .select('fcm_token')
+      .in('user_id', userIds);
+
+    if (error) throw error;
+
+    const fcmTokens = tokens.map(t => t.fcm_token);
+    const response = await admin.messaging().subscribeToTopic(fcmTokens, topic);
+
+    res.json({
+      success: true,
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+    });
+  } catch (error) {
+    console.error('Error subscribing to topic:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 // ------------------------
 // Start server
