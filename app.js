@@ -930,7 +930,7 @@ console.log('pinId:', pinId, 'assignedByName:', assignedByName);
     notification: {
       title: '📍 New Pin Assigned!',
       body: `${assignedByName} assigned you a pin `,
-      icon: 'https://zaynspace.com/logo_blanc.png',
+      image: 'https://zaynspace.com/logo_blanc.png',
     },
     data: {
       type: 'pin_assigned',
