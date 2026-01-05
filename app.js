@@ -928,9 +928,9 @@ console.log('pinId:', pinId, 'assignedByName:', assignedByName);
   if (tokens && tokens.length > 0) {
   const message = {
     notification: {
-      title: '📍 New Pin Assigned!',
-      body: `${assignedByName} assigned you a pin `,
-      image: 'https://zaynspace.com/logo_blanc.png',
+      title: 'Une nouvelle tâche a été assignée !',
+      body: `${assignedByName} vous a assigné une tâche`,
+      
     },
     data: {
       type: 'pin_assigned',
