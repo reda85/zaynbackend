@@ -113,7 +113,7 @@ export default function MediaReportServer({
                 {
   selectedMedias.length > 0
     ? (() => {
-        const dates = selectedMedias.map(media => new Date(media.pin_pdf?.created_at));
+        const dates = selectedMedias.map(media => new Date(media.pdf_pins?.created_at));
         const earliest = new Date(Math.min(...dates));
         const latest = new Date(Math.max(...dates));
         return `${earliest.toLocaleDateString("fr-FR")} - ${latest.toLocaleDateString("fr-FR")}`;
@@ -134,7 +134,7 @@ export default function MediaReportServer({
     ? (() => {
         const uniquePins = new Set(
           selectedMedias
-            .map(media => media.pin_pdf?.id) // récupère l'id du pin
+            .map(media => media.pdf_pins?.id) // récupère l'id du pin
             .filter(Boolean) // ignore les valeurs null/undefined
         );
         return uniquePins.size; // nombre de pins uniques
