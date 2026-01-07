@@ -175,7 +175,7 @@ export default function PdfReportServer({
                 {/* LEFT COLUMN - TEXT */}
                 <View style={{ flex: 1 }}>
                   <Text style={tw("text-lg font-bold text-stone-800")}>
-                    {index + 1}. {pin.name}
+                    {index + 1}. {pin?.name || "Tâche sans nom"}
                   </Text>
 
                   {/* Category + Status Pills */}
