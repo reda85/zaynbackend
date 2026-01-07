@@ -111,9 +111,16 @@ export default function PdfReportServer({
             <View style={tw("w-1/2")}>
               <Text style={tw("text-stone-800 text-xs font-bold")}>Période</Text>
               <Text style={tw("text-sm text-stone-800 mt-2")}>
-                {selectedPins[0]?.due_date
-                  ? new Date(selectedPins[0].due_date).toLocaleDateString("fr-FR")
-                  : "-"}
+               {
+  selectedPins.length > 0
+    ? (() => {
+        const dates = selectedPins.map(pin => new Date(pin.created_at));
+        const earliest = new Date(Math.min(...dates));
+        const latest = new Date(Math.max(...dates));
+        return `${earliest.toLocaleDateString("fr-FR")} - ${latest.toLocaleDateString("fr-FR")}`;
+      })()
+    : "-"
+}
               </Text>
             </View>
             <View style={tw("flex-row w-1/2")}>
@@ -123,7 +130,7 @@ export default function PdfReportServer({
               </View>
               <View style={tw("w-1/3 px-2")}>
                 <Text style={tw("text-xs text-stone-800 font-bold")}>En retard</Text>
-                <Text style={tw("text-sm font-bold mt-2")}>?</Text>
+                <Text style={tw("text-sm font-bold mt-2")}>{selectedPins.filter(pin => pin.due_date && new Date(pin.due_date) < new Date()).length}</Text>
               </View>
               <View style={tw("w-1/3 px-2")}>
                 <Text style={tw("text-xs text-stone-800 font-bold")}>Plans</Text>

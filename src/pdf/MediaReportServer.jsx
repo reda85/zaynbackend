@@ -110,19 +110,37 @@ export default function MediaReportServer({
             <View style={tw("w-1/2")}>
               <Text style={tw("text-stone-800 text-xs font-bold")}>Période</Text>
               <Text style={tw("text-sm text-stone-800 mt-2")}>
-                {selectedMedias[0]?.pin_pdf?.due_date
-                  ? new Date(selectedMedias[0]?.pin_pdf?.due_date).toLocaleDateString("fr-FR")
-                  : "-"}
+                {
+  selectedMedias.length > 0
+    ? (() => {
+        const dates = selectedMedias.map(media => new Date(media.pin_pdf?.created_at));
+        const earliest = new Date(Math.min(...dates));
+        const latest = new Date(Math.max(...dates));
+        return `${earliest.toLocaleDateString("fr-FR")} - ${latest.toLocaleDateString("fr-FR")}`;
+      })()
+    : "-"
+}
               </Text>
             </View>
             <View style={tw("flex-row w-1/2")}>
               <View style={tw("w-1/3")}>
-                <Text style={tw("text-xs text-stone-800 font-bold")}>Total Phootos</Text>
+                <Text style={tw("text-xs text-stone-800 font-bold")}>Total Photos</Text>
                 <Text style={tw("text-sm font-bold mt-2")}>{selectedMedias.length}</Text>
               </View>
               <View style={tw("w-1/3 px-2")}>
                 <Text style={tw("text-xs text-stone-800 font-bold")}>Total Pins</Text>
-                <Text style={tw("text-sm font-bold mt-2")}>?</Text>
+                <Text style={tw("text-sm font-bold mt-2")}>{
+  selectedMedias.length > 0
+    ? (() => {
+        const uniquePins = new Set(
+          selectedMedias
+            .map(media => media.pin_pdf?.id) // récupère l'id du pin
+            .filter(Boolean) // ignore les valeurs null/undefined
+        );
+        return uniquePins.size; // nombre de pins uniques
+      })()
+    : 0
+}</Text>
               </View>
               <View style={tw("w-1/3 px-2")}>
                 <Text style={tw("text-xs text-stone-800 font-bold")}>Total Plans</Text>
