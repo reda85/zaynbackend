@@ -384,7 +384,7 @@ app.get("/api/report", async (req, res) => {
     );
 
     console.log("Generating PDF report...");
-    console.log("selectedProject", selectedProject);
+    console.log("selectedProject", project);
     
     // Debug: Log snapshot info
     console.log("Prepared pins snapshot info:");
