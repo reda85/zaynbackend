@@ -94,7 +94,7 @@ export default function MediaReportServer({
         {/* === HEADER === */}
         <View style={tw("flex-row justify-between items-start mb-6")}>
           <View>
-            <Text style={tw("text-stone-800 text-lg font-bold")}>Entreprise X</Text>
+            <Text style={tw("text-stone-800 text-lg font-bold")}>{selectedProject?.organizations?.name || "Organisation"}</Text>
             <Text style={tw("text-base text-stone-800 mt-1")}>{selectedProject?.name || "Projet"}</Text>
           </View>
           <Text style={tw("text-sm text-stone-800")}>
