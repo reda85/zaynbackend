@@ -299,7 +299,7 @@ app.get("/api/report", async (req, res) => {
     // Fetch project
     const { data: project, error: projectError } = await supabase
       .from("projects")
-      .select("*")
+      .select("*,organizations(*)")
       .eq("id", projectId)
       .single();
     if (projectError) {
