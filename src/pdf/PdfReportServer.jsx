@@ -19,7 +19,7 @@ export const pdfIconsMap = {
   "paint": path.join(process.cwd(), "icons/paint-roller-white.png"),
   "fire-extinguisher": path.join(process.cwd(), "icons/fire-extinguisher-white.png"),
   "carrelage": path.join(process.cwd(), "icons/grid-white.png"),
-  "Non assigne": path.join(process.cwd(), "icons/user-x-white.png"),
+  "unassigned": path.join(process.cwd(), "icons/user-x-white.png"),
 };
 
 function PdfCategoryLabel({ category, status }) {
