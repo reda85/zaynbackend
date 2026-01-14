@@ -11,6 +11,9 @@ import { renderToStream } from "@react-pdf/renderer";
 import path from "path";
 import { fileURLToPath } from "url";
 import admin from 'firebase-admin';
+import { execSync } from "child_process";
+
+console.log("QPDF VERSION:", execSync("qpdf --version").toString())
 
 
 
