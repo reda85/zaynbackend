@@ -21,4 +21,4 @@ COPY . .
 
 EXPOSE 3001
 
-CMD ["node", "app.js"]
+CMD ["npx", "tsx", "app.js"]

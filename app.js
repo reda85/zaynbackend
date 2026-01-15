@@ -12,10 +12,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 import admin from 'firebase-admin';
 import { execSync } from "child_process";
+import multer from "multer";
+import fs from "fs-extra";
+import crypto from "crypto";  
 
 console.log("QPDF VERSION:", execSync("qpdf --version").toString())
 
-
+const upload = multer({ limits: { fileSize: 50 * 1024 * 1024 } });
 
 
 admin.initializeApp({
@@ -242,6 +245,139 @@ async function cropZoom(pdfImg, xNorm, yNorm, size = 800) {
 
 // ------------------------
 // API endpoint
+
+
+app.post("/api/upload-pdf", upload.single("file"), async (req, res) => {
+  try {
+    const { projectId } = req.body;
+    const file = req.file;
+
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+    if (!projectId) return res.status(400).json({ error: "Missing projectId" });
+
+    const tmpDir = `/tmp/${crypto.randomUUID()}`;
+    await fs.ensureDir(tmpDir);
+
+    const inputPath = `${tmpDir}/input.pdf`;
+    const linearizedPath = `${tmpDir}/linearized.pdf`;
+    const pagesDir = `${tmpDir}/pages`;
+
+    await fs.writeFile(inputPath, file.buffer);
+
+    // 1️⃣ Linearize PDF
+    execSync(`qpdf "${inputPath}" --linearize "${linearizedPath}"`);
+
+    // 2️⃣ Get page count
+    const pageCount = Number(execSync(`qpdf --show-npages "${linearizedPath}"`).toString());
+
+    await fs.ensureDir(pagesDir);
+
+    // 🔧 Sanitize filename: remove special characters, accents, and spaces
+    const sanitizeFilename = (name) => {
+      return name
+        .normalize('NFD')                      // Decompose accented characters
+        .replace(/[\u0300-\u036f]/g, '')      // Remove diacritics
+        .replace(/[^a-zA-Z0-9._-]/g, '_')     // Replace invalid chars with underscore
+        .replace(/_{2,}/g, '_')               // Replace multiple underscores with single
+        .replace(/^_+|_+$/g, '')              // Remove leading/trailing underscores
+        .substring(0, 200);                   // Limit length
+    };
+
+    const originalBaseName = file.originalname.replace(/\.pdf$/i, '');
+    const fileBaseName = sanitizeFilename(originalBaseName);
+
+    console.log(`📄 Original filename: ${originalBaseName}`);
+    console.log(`✨ Sanitized filename: ${fileBaseName}`);
+
+    const uploadedPages = [];
+    const errors = [];
+
+    // 3️⃣ Split pages, upload to storage, and create database records
+    for (let i = 1; i <= pageCount; i++) {
+      const sanitizedPageName = `${fileBaseName}-page${i}`;
+      const pagePath = `${pagesDir}/${sanitizedPageName}.pdf`;
+
+      try {
+        // Split the page
+        execSync(`qpdf "${linearizedPath}" --pages "${linearizedPath}" ${i} -- "${pagePath}"`);
+
+        const buffer = await fs.readFile(pagePath);
+
+        // Upload to Supabase Storage with correct path structure: public/projectId/...
+        const storageFilePath = `public/${projectId}/${sanitizedPageName}.pdf`;
+        const { error: uploadError } = await supabase.storage
+          .from("project-plans")  // ✅ Correct bucket name
+          .upload(storageFilePath, buffer, {
+            contentType: "application/pdf",
+            upsert: true,
+          });
+
+        if (uploadError) {
+          throw new Error(`Storage upload failed: ${uploadError.message}`);
+        }
+
+        // Insert into database with original name (for display) but sanitized file_url
+        const { data: newPlan, error: dbError } = await supabase
+          .from('plans')
+          .insert({
+            name: `${originalBaseName}-page${i}`,  // Keep original name for display
+            project_id: projectId,
+            file_url: storageFilePath,  // Use sanitized path with 'public' prefix
+          })
+          .select()
+          .single();
+
+        if (dbError) {
+          throw new Error(`Database insert failed: ${dbError.message}`);
+        }
+
+        uploadedPages.push(newPlan);
+        console.log(`✅ Page ${i}/${pageCount} uploaded successfully`);
+
+      } catch (pageError) {
+        console.error(`❌ Error processing page ${i}:`, pageError.message);
+        errors.push({
+          page: i,
+          error: pageError.message
+        });
+      }
+    }
+
+    // Clean up temporary files
+    await fs.remove(tmpDir);
+
+    // Check if all pages failed
+    if (uploadedPages.length === 0) {
+      return res.status(500).json({ 
+        error: "Failed to upload any pages", 
+        details: errors 
+      });
+    }
+
+    // Return success with details
+    res.json({ 
+      success: true, 
+      pageCount,
+      fileBaseName: originalBaseName,  // Return original name
+      uploadedCount: uploadedPages.length,
+      failedCount: errors.length,
+      errors: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (err) {
+    console.error("PDF upload/split error:", err);
+    
+    // Try to clean up on error
+    try {
+      if (tmpDir) await fs.remove(tmpDir);
+    } catch (cleanupError) {
+      console.error("Cleanup error:", cleanupError);
+    }
+    
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/report", async (req, res) => {
   try {
     const { projectId, selectedIds } = req.query;
