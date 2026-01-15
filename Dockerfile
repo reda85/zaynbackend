@@ -21,5 +21,6 @@ COPY . .
 
 EXPOSE 3001
 
-CMD ["node", "--loader", "tsx", "app.js"]
+CMD ["node", "--import", "tsx", "app.js"]
+
 
