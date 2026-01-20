@@ -15,8 +15,15 @@ import { execSync,  execFileSync } from "child_process";
 import multer from "multer";
 import fs from "fs-extra";
 import crypto from "crypto"; 
-import { fromBuffer } from "pdf2pic";
 import os from "os";
+// ========================================================================================
+// ROBUST PDF RENDERING - Uses Sharp + Ghostscript instead of PDF.js to avoid canvas issues
+// ========================================================================================
+
+import { promisify } from 'util';
+import { exec as execCallback } from 'child_process';
+const execAsync = promisify(execCallback);
+
 
 
 console.log("QPDF VERSION:", execSync("qpdf --version").toString())
@@ -111,7 +118,7 @@ try {
 
 
 /// Fixed SafeCanvasFactory - prevents the napi crash
-// 🔧 DOCKER-COMPATIBLE: Minimal canvas factory
+// Fixed SafeCanvasFactory - prevents the napi crash
 class SafeCanvasFactory {
   create(width, height) {
     const canvas = createCanvas(width, height);
@@ -119,55 +126,78 @@ class SafeCanvasFactory {
     return { canvas, context };
   }
   
-  reset() {}
-  destroy() {}
-}
-
-// 🔧 DOCKER-COMPATIBLE: Render without worker
-async function renderPdfPage(pdfBuffer, scale = 2.5) {
-  const loadingTask = pdfjsLib.getDocument({
-    data: new Uint8Array(pdfBuffer),
-    useSystemFonts: false,
-    disableFontFace: true,
-    verbosity: 0,
-    // Disable worker to avoid canvas issues
-    useWorkerFetch: false,
-    isEvalSupported: false,
-  });
-
-  const pdf = await loadingTask.promise;
-  const page = await pdf.getPage(1);
-  const viewport = page.getViewport({ scale });
+  reset(canvasAndContext, width, height) {
+    // Do nothing - avoid modifying canvas
+    return;
+  }
   
-  // Create canvas directly
-  const canvas = createCanvas(viewport.width, viewport.height);
-  const context = canvas.getContext("2d");
-
-  // White background
-  context.fillStyle = "#FFFFFF";
-  context.fillRect(0, 0, viewport.width, viewport.height);
-
-  // Render
-  await page.render({
-    canvasContext: context,
-    viewport: viewport,
-    intent: "display",
-    annotationMode: 0,
-    renderInteractiveForms: false,
-  }).promise;
-
-  // Copy to new canvas to isolate from PDF.js
-  const imageData = context.getImageData(0, 0, viewport.width, viewport.height);
-  const safeCanvas = createCanvas(viewport.width, viewport.height);
-  const safeContext = safeCanvas.getContext("2d");
-  safeContext.putImageData(imageData, 0, 0);
-
-  return { 
-    canvas: safeCanvas, 
-    width: viewport.width, 
-    height: viewport.height 
-  };
+  destroy(canvasAndContext) {
+    // ⭐ CRITICAL: Do absolutely nothing
+    // Let garbage collection handle everything
+    return;
+  }
 }
+// Updated renderPdfPage function with better cleanup
+async function renderPdfPage(pdfBuffer, scale = 2.5) {
+  let loadingTask = null;
+  let pdf = null;
+  let page = null;
+  
+  try {
+    loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(pdfBuffer),
+      useSystemFonts: false,
+      disableFontFace: true,
+      verbosity: 0,
+    });
+
+    pdf = await loadingTask.promise;
+    page = await pdf.getPage(1);
+
+    const viewport = page.getViewport({ scale });
+    const canvasFactory = new SafeCanvasFactory();
+    const { canvas, context } = canvasFactory.create(
+      viewport.width,
+      viewport.height
+    );
+
+    // Fill with white background
+    context.fillStyle = "#FFFFFF";
+    context.fillRect(0, 0, viewport.width, viewport.height);
+
+    const renderTask = page.render({
+      canvasContext: context,
+      viewport,
+      canvasFactory,
+      intent: "display",
+      annotationMode: 0,
+      renderInteractiveForms: false,
+    });
+
+    await renderTask.promise;
+
+    const result = { canvas, width: viewport.width, height: viewport.height };
+    
+    // Delayed cleanup after 100ms
+    setTimeout(async () => {
+      try {
+        if (page) page.cleanup().catch(() => {});
+        if (pdf) {
+          pdf.cleanup().catch(() => {});
+          pdf.destroy().catch(() => {});
+        }
+        if (loadingTask) loadingTask.destroy().catch(() => {});
+      } catch (e) {
+        // Ignore
+      }
+    }, 100);
+    
+    return result;
+  } catch (error) {
+    throw error;
+  }
+}
+
 
 async function renderPdfPageForWebp(pdfBuffer, scale = 2.5) {
   const loadingTask = pdfjsLib.getDocument({
@@ -175,39 +205,57 @@ async function renderPdfPageForWebp(pdfBuffer, scale = 2.5) {
     useSystemFonts: false,
     disableFontFace: true,
     verbosity: 0,
-    useWorkerFetch: false,
-    isEvalSupported: false,
   });
 
   const pdf = await loadingTask.promise;
   const page = await pdf.getPage(1);
   const viewport = page.getViewport({ scale });
-  
-  const canvas = createCanvas(viewport.width, viewport.height);
-  const context = canvas.getContext("2d");
+  const canvasFactory = new SafeCanvasFactory();
+  const { canvas, context } = canvasFactory.create(
+    viewport.width,
+    viewport.height
+  );
 
+  // Fill with white background
   context.fillStyle = "#FFFFFF";
   context.fillRect(0, 0, viewport.width, viewport.height);
 
-  await page.render({
+  const renderTask = page.render({
     canvasContext: context,
-    viewport: viewport,
+    viewport,
+    canvasFactory,
     intent: "display",
     annotationMode: 0,
     renderInteractiveForms: false,
-  }).promise;
+  });
 
-  const imageData = context.getImageData(0, 0, viewport.width, viewport.height);
-  const safeCanvas = createCanvas(viewport.width, viewport.height);
-  const safeContext = safeCanvas.getContext("2d");
-  safeContext.putImageData(imageData, 0, 0);
+  await renderTask.promise;
 
-  return { 
-    canvas: safeCanvas, 
-    width: viewport.width, 
-    height: viewport.height 
-  };
+  // Return canvas - NO CLEANUP
+  // Objects will be garbage collected automatically
+  return { canvas, width: viewport.width, height: viewport.height };
 }
+
+
+
+async function renderPdfPageToWebp(pdfBuffer, scale = 2.0) {
+  try {
+    const { canvas } = await renderPdfPageForWebp(pdfBuffer, scale);
+
+    // Convert to WebP buffer
+    const webpBuffer = canvas.toBuffer("image/webp", {
+      quality: 92,
+      alphaQuality: 100,
+      lossless: false,
+    });
+
+    return webpBuffer;
+  } catch (error) {
+    console.error("Error in renderPdfPageToWebp:", error.message);
+    throw error;
+  }
+}
+
 function sanitizeFilename(name) {
   return name
     .normalize("NFD")
@@ -493,10 +541,145 @@ app.post("/api/upload-pdf", upload.single("file"), async (req, res) => {
   }
 });
 
+/**
+ * Render PDF page to image using Ghostscript (more reliable in Docker)
+ * This completely bypasses PDF.js and @napi-rs/canvas compatibility issues
+ */
+async function renderPdfPageRobust(pdfBuffer, scale = 2.5) {
+  const tmpDir = path.join(os.tmpdir(), `pdf-render-${crypto.randomUUID()}`);
+  
+  try {
+    await fs.ensureDir(tmpDir);
+    
+    // Write PDF to temp file
+    const pdfPath = path.join(tmpDir, 'input.pdf');
+    await fs.writeFile(pdfPath, pdfBuffer);
+    
+    // Calculate DPI for the desired scale (72 DPI * scale)
+    const dpi = Math.floor(72 * scale);
+    
+    // Use Ghostscript to render PDF to PNG
+    const outputPath = path.join(tmpDir, 'output.png');
+    const gsCommand = process.platform === 'win32' ? 'gswin64c' : 'gs';
+    
+    const cmd = `${gsCommand} -dSAFER -dBATCH -dNOPAUSE -dQUIET \
+      -sDEVICE=png16m \
+      -r${dpi} \
+      -dFirstPage=1 -dLastPage=1 \
+      -dTextAlphaBits=4 -dGraphicsAlphaBits=4 \
+      -sOutputFile="${outputPath}" \
+      "${pdfPath}"`;
+    
+    await execAsync(cmd);
+    
+    // Read the rendered PNG
+    const pngBuffer = await fs.readFile(outputPath);
+    
+    // Use Sharp to load and convert to canvas-compatible format
+    const sharp = (await import('sharp')).default;
+    const metadata = await sharp(pngBuffer).metadata();
+    const { data, info } = await sharp(pngBuffer)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    
+    // Create canvas and draw the image
+    const canvas = createCanvas(info.width, info.height);
+    const ctx = canvas.getContext('2d');
+    
+    // Create ImageData from raw pixels
+    const imageData = ctx.createImageData(info.width, info.height);
+    
+    // Copy pixel data (RGBA format)
+    for (let i = 0; i < data.length; i++) {
+      imageData.data[i] = data[i];
+    }
+    
+    ctx.putImageData(imageData, 0, 0);
+    
+    // Cleanup temp files
+    await fs.remove(tmpDir);
+    
+    return {
+      canvas,
+      width: info.width,
+      height: info.height
+    };
+    
+  } catch (error) {
+    // Cleanup on error
+    await fs.remove(tmpDir).catch(() => {});
+    throw new Error(`PDF rendering failed: ${error.message}`);
+  }
+}
+
+/**
+ * Crop and zoom into a specific area of the rendered PDF
+ */
+async function cropZoomRobust(pdfImg, xNorm, yNorm, size = 800) {
+  const { canvas, width, height } = pdfImg;
+  const x = Math.floor(xNorm * width);
+  const y = Math.floor(yNorm * height);
+  
+  // Create output canvas
+  const out = createCanvas(size, size);
+  const ctx = out.getContext("2d");
+  
+  // Calculate crop boundaries
+  const cropX = Math.max(0, Math.min(x - size / 2, width - size));
+  const cropY = Math.max(0, Math.min(y - size / 2, height - size));
+  const cropWidth = Math.min(size, width - cropX);
+  const cropHeight = Math.min(size, height - cropY);
+  
+  // White background
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, size, size);
+  
+  // Disable smoothing for pixel-perfect rendering
+  ctx.imageSmoothingEnabled = false;
+  
+  // Draw cropped area
+  try {
+    ctx.drawImage(
+      canvas,
+      cropX, cropY, cropWidth, cropHeight,
+      0, 0, cropWidth, cropHeight
+    );
+  } catch (error) {
+    console.error("Error drawing cropped image:", error);
+    ctx.fillStyle = "#f0f0f0";
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = "red";
+    ctx.font = "20px Arial";
+    ctx.fillText("Rendering Error", 10, 30);
+  }
+  
+  // Re-enable smoothing for pin dot
+  ctx.imageSmoothingEnabled = true;
+  
+  // Draw pin dot
+  drawPinDot(ctx, size);
+  
+  // Convert to base64
+  const buffer = out.toBuffer("image/png", {
+    compressionLevel: 3,
+    filters: canvas.PNG_FILTER_NONE
+  });
+  
+  return "data:image/png;base64," + buffer.toString("base64");
+}
+
+// ========================================================================================
+// REWRITTEN /api/report ENDPOINT - More robust with better error handling
+// ========================================================================================
+
 app.get("/api/report", async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const { projectId, selectedIds } = req.query;
     
+    // Validate inputs
     if (!projectId || !selectedIds) {
       return res.status(400).json({ 
         error: "Missing required parameters: projectId and selectedIds" 
@@ -504,149 +687,169 @@ app.get("/api/report", async (req, res) => {
     }
 
     const ids = selectedIds.split(",").map(id => id.trim());
-    console.log(`Generating report for project ${projectId}, pins:`, ids);
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`📊 REPORT GENERATION STARTED`);
+    console.log(`Project: ${projectId}`);
+    console.log(`Pins: ${ids.length} selected`);
+    console.log(`${'='.repeat(80)}\n`);
 
-    // Fetch pins with relations - INCLUDING plans.file_url for each pin's PDF
-    const { data: pins, error: pinsError } = await supabase
-      .from("pdf_pins")
-      .select(`
-        *,
-        categories(*),
-        Status(*),
-        assigned_to(*),
-        created_by(*),
-        projects(*),
-        pins_photos(*),
-        plans(file_url)
-      `)
-      .eq("project_id", projectId)
-      .in("id", ids);
+    // ============================================================
+    // STEP 1: Fetch all data in parallel
+    // ============================================================
+    console.log("⏳ Step 1/4: Fetching data from database...");
     
-    if (pinsError) {
-      console.error("Supabase error fetching pins:", pinsError);
-      throw pinsError;
-    }
-    
+    const [pinsResult, categoriesResult, statusesResult, projectResult] = await Promise.all([
+      supabase
+        .from("pdf_pins")
+        .select(`
+          *,
+          categories(*),
+          Status(*),
+          assigned_to(*),
+          created_by(*),
+          projects(*),
+          pins_photos(*),
+          plans(file_url)
+        `)
+        .eq("project_id", projectId)
+        .in("id", ids),
+      
+      supabase.from("categories").select("*"),
+      supabase.from("Status").select("*"),
+      supabase.from("projects").select("*,organizations(*)").eq("id", projectId).single()
+    ]);
+
+    // Check for errors
+    if (pinsResult.error) throw pinsResult.error;
+    if (categoriesResult.error) throw categoriesResult.error;
+    if (statusesResult.error) throw statusesResult.error;
+    if (projectResult.error) throw projectResult.error;
+
+    const pins = pinsResult.data;
+    const categories = categoriesResult.data;
+    const statuses = statusesResult.data;
+    const project = projectResult.data;
+
     if (!pins || pins.length === 0) {
       throw new Error("No pins found for the given criteria");
     }
 
-    console.log(`Found ${pins.length} pins`);
+    console.log(`✅ Data fetched: ${pins.length} pins, ${categories.length} categories, ${statuses.length} statuses\n`);
 
-    // Fetch categories and statuses
-    const { data: categories, error: catError } = await supabase
-      .from("categories")
-      .select("*");
-    if (catError) {
-      console.error("Supabase error fetching categories:", catError);
-      throw catError;
-    }
-
-    const { data: statuses, error: statusError } = await supabase
-      .from("Status")
-      .select("*");
-    if (statusError) {
-      console.error("Supabase error fetching statuses:", statusError);
-      throw statusError;
-    }
-
-    // Fetch project
-    const { data: project, error: projectError } = await supabase
-      .from("projects")
-      .select("*,organizations(*)")
-      .eq("id", projectId)
-      .single();
-    if (projectError) {
-      console.error("Supabase error fetching project:", projectError);
-      throw projectError;
-    }
-
-    // Group pins by PDF URL and render each PDF once
-    // This caches PDFs so if multiple pins share the same PDF, we only download/render once
+    // ============================================================
+    // STEP 2: Download and render PDFs (with caching)
+    // ============================================================
+    console.log("⏳ Step 2/4: Processing PDFs...");
+    
     const pdfCache = new Map();
+    const downloadPromises = [];
     
-    console.log("Processing PDFs and creating snapshots...");
+    // Group pins by PDF URL to minimize downloads
+    const pinsByPdf = new Map();
+    for (const pin of pins) {
+      const filePath = pin.plans?.file_url;
+      if (!filePath) continue;
+      
+      const pdfUrl = supabase.storage
+        .from('project-plans')
+        .getPublicUrl(filePath)
+        .data.publicUrl;
+      
+      if (!pinsByPdf.has(pdfUrl)) {
+        pinsByPdf.set(pdfUrl, []);
+      }
+      pinsByPdf.get(pdfUrl).push(pin);
+    }
     
-    // Process each pin - get PDF from plans.file_url
-    const preparedPins = await Promise.all(
-      pins.map(async (pin, index) => {
-        // GET PDF PATH from plans.file_url for this specific pin
-        const filePath = pin.plans?.file_url;
-        
-        if (!filePath) {
-          console.warn(`Pin ${pin.id} has no PDF path (plans.file_url is missing), skipping snapshot`);
-          return { ...pin, snapshot: null };
-        }
-
-        // Get the public URL from Supabase Storage
-        const pdfUrl = supabase.storage
-          .from('project-plans')
-          .getPublicUrl(filePath)
-          .data.publicUrl;
-
-        console.log(`Pin ${pin.id} PDF URL: ${pdfUrl}`);
-
-        // Check if we've already rendered this PDF (in case multiple pins use same PDF)
-        let pdfImg = pdfCache.get(pdfUrl);
-        
-        if (!pdfImg) {
-          console.log(`Downloading and rendering new PDF for pin ${pin.id}`);
-          
+    console.log(`📄 Found ${pinsByPdf.size} unique PDF files to process`);
+    
+    // Download and render PDFs in batches of 3
+    const BATCH_SIZE = 3;
+    const pdfUrls = Array.from(pinsByPdf.keys());
+    
+    for (let i = 0; i < pdfUrls.length; i += BATCH_SIZE) {
+      const batch = pdfUrls.slice(i, i + BATCH_SIZE);
+      console.log(`   Processing PDF batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(pdfUrls.length / BATCH_SIZE)}...`);
+      
+      await Promise.all(
+        batch.map(async (pdfUrl) => {
           try {
-            // Download the PDF from Supabase Storage
+            console.log(`   📥 Downloading: ${pdfUrl.substring(pdfUrl.lastIndexOf('/') + 1)}`);
+            
             const pdfResponse = await axios.get(pdfUrl, { 
               responseType: "arraybuffer",
               timeout: 30000,
               maxContentLength: 50 * 1024 * 1024
             });
+            
             const pdfBuffer = Buffer.from(pdfResponse.data);
-            console.log(`PDF downloaded for pin ${pin.id}: ${pdfBuffer.length} bytes`);
+            console.log(`   ✓ Downloaded: ${(pdfBuffer.length / 1024 / 1024).toFixed(2)} MB`);
             
-            // Render the first page to canvas
-            pdfImg = await renderPdfPage(pdfBuffer);
-            console.log(`PDF rendered for pin ${pin.id}: ${pdfImg.width}x${pdfImg.height}`);
+            console.log(`   🎨 Rendering PDF...`);
+            const pdfImg = await renderPdfPageRobust(pdfBuffer, 2.5);
+            console.log(`   ✓ Rendered: ${pdfImg.width}x${pdfImg.height}px`);
             
-            // Cache the rendered PDF for reuse
             pdfCache.set(pdfUrl, pdfImg);
           } catch (error) {
-            console.error(`Failed to process PDF for pin ${pin.id} from ${pdfUrl}:`, error.message);
-            return { ...pin, snapshot: null };
+            console.error(`   ❌ Failed to process PDF ${pdfUrl}:`, error.message);
+            pdfCache.set(pdfUrl, null);
           }
-        } else {
-          console.log(`Using cached PDF for pin ${pin.id}`);
-        }
+        })
+      );
+    }
+    
+    console.log(`✅ PDFs processed: ${pdfCache.size} cached\n`);
 
-        console.log(`Creating snapshot ${index + 1}/${pins.length} for pin ${pin.id}`);
+    // ============================================================
+    // STEP 3: Generate snapshots for each pin
+    // ============================================================
+    console.log("⏳ Step 3/4: Creating snapshots...");
+    
+    const preparedPins = await Promise.all(
+      pins.map(async (pin, index) => {
+        const filePath = pin.plans?.file_url;
         
-        // Check if coordinates exist (using x and y, not x_norm and y_norm)
-        if (pin.x === undefined || pin.y === undefined) {
-          console.warn(`Pin ${pin.id} missing coordinates - x: ${pin.x}, y: ${pin.y}`);
-          console.log(`Available pin fields:`, Object.keys(pin));
+        if (!filePath) {
+          console.warn(`   ⚠️  Pin ${pin.id}: No PDF file`);
           return { ...pin, snapshot: null };
         }
+
+        const pdfUrl = supabase.storage
+          .from('project-plans')
+          .getPublicUrl(filePath)
+          .data.publicUrl;
+
+        const pdfImg = pdfCache.get(pdfUrl);
         
+        if (!pdfImg) {
+          console.warn(`   ⚠️  Pin ${pin.id}: PDF not rendered`);
+          return { ...pin, snapshot: null };
+        }
+
+        if (pin.x === undefined || pin.y === undefined) {
+          console.warn(`   ⚠️  Pin ${pin.id}: Missing coordinates`);
+          return { ...pin, snapshot: null };
+        }
+
         try {
-          // Create snapshot from the pin's specific PDF using x and y coordinates
-          // Using 800px size for better quality
-          const snapshot = await cropZoom(pdfImg, pin.x, pin.y, 800);
+          console.log(`   📸 Snapshot ${index + 1}/${pins.length}: Pin ${pin.id} at (${pin.x.toFixed(3)}, ${pin.y.toFixed(3)})`);
+          const snapshot = await cropZoomRobust(pdfImg, pin.x, pin.y, 800);
           return { ...pin, snapshot };
         } catch (error) {
-          console.error(`Failed to create snapshot for pin ${pin.id}:`, error.message);
+          console.error(`   ❌ Pin ${pin.id}: Snapshot failed -`, error.message);
           return { ...pin, snapshot: null };
         }
       })
     );
 
-    console.log("Generating PDF report...");
-    console.log("selectedProject", project);
+    const successfulSnapshots = preparedPins.filter(p => p.snapshot).length;
+    console.log(`✅ Snapshots created: ${successfulSnapshots}/${pins.length}\n`);
+
+    // ============================================================
+    // STEP 4: Generate PDF report
+    // ============================================================
+    console.log("⏳ Step 4/4: Generating PDF report...");
     
-    // Debug: Log snapshot info
-    console.log("Prepared pins snapshot info:");
-    preparedPins.forEach(pin => {
-      console.log(`Pin ${pin.id}: snapshot exists: ${!!pin.snapshot}, length: ${pin.snapshot?.length || 0}`);
-    });
-    
-    // Load the PDF component
     const PdfComponent = await loadPdfReportComponent();
     
     const pdfStream = await renderToStream(
@@ -659,24 +862,31 @@ app.get("/api/report", async (req, res) => {
     );
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="report-${projectId}.pdf"`);
+    res.setHeader("Content-Disposition", `attachment; filename="report-${projectId}-${Date.now()}.pdf"`);
     
     pdfStream.pipe(res);
     
     pdfStream.on("end", () => {
-      console.log("PDF generation completed successfully");
+      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+      console.log(`✅ PDF report generated successfully in ${duration}s`);
+      console.log(`${'='.repeat(80)}\n`);
     });
     
     pdfStream.on("error", (err) => {
-      console.error("PDF stream error:", err);
+      console.error("❌ PDF stream error:", err);
       if (!res.headersSent) {
         res.status(500).json({ error: "PDF generation failed" });
       }
     });
 
   } catch (err) {
-    console.error("PDF GENERATION ERROR:", err);
-    console.error("Error stack:", err.stack);
+    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.error(`\n${'='.repeat(80)}`);
+    console.error("❌ REPORT GENERATION FAILED");
+    console.error(`Duration: ${duration}s`);
+    console.error("Error:", err.message);
+    console.error("Stack:", err.stack);
+    console.error(`${'='.repeat(80)}\n`);
     
     if (!res.headersSent) {
       res.status(500).json({ 
@@ -686,6 +896,7 @@ app.get("/api/report", async (req, res) => {
     }
   }
 });
+
 
 // ------------------------
 // API endpoint
