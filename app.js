@@ -111,7 +111,7 @@ try {
 
 
 /// Fixed SafeCanvasFactory - prevents the napi crash
-// Fixed SafeCanvasFactory - prevents the napi crash
+// 🔧 DOCKER-COMPATIBLE: Minimal canvas factory
 class SafeCanvasFactory {
   create(width, height) {
     const canvas = createCanvas(width, height);
@@ -119,78 +119,55 @@ class SafeCanvasFactory {
     return { canvas, context };
   }
   
-  reset(canvasAndContext, width, height) {
-    // Do nothing - avoid modifying canvas
-    return;
-  }
-  
-  destroy(canvasAndContext) {
-    // ⭐ CRITICAL: Do absolutely nothing
-    // Let garbage collection handle everything
-    return;
-  }
+  reset() {}
+  destroy() {}
 }
-// Updated renderPdfPage function with better cleanup
+
+// 🔧 DOCKER-COMPATIBLE: Render without worker
 async function renderPdfPage(pdfBuffer, scale = 2.5) {
-  let loadingTask = null;
-  let pdf = null;
-  let page = null;
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(pdfBuffer),
+    useSystemFonts: false,
+    disableFontFace: true,
+    verbosity: 0,
+    // Disable worker to avoid canvas issues
+    useWorkerFetch: false,
+    isEvalSupported: false,
+  });
+
+  const pdf = await loadingTask.promise;
+  const page = await pdf.getPage(1);
+  const viewport = page.getViewport({ scale });
   
-  try {
-    loadingTask = pdfjsLib.getDocument({
-      data: new Uint8Array(pdfBuffer),
-      useSystemFonts: false,
-      disableFontFace: true,
-      verbosity: 0,
-    });
+  // Create canvas directly
+  const canvas = createCanvas(viewport.width, viewport.height);
+  const context = canvas.getContext("2d");
 
-    pdf = await loadingTask.promise;
-    page = await pdf.getPage(1);
+  // White background
+  context.fillStyle = "#FFFFFF";
+  context.fillRect(0, 0, viewport.width, viewport.height);
 
-    const viewport = page.getViewport({ scale });
-    const canvasFactory = new SafeCanvasFactory();
-    const { canvas, context } = canvasFactory.create(
-      viewport.width,
-      viewport.height
-    );
+  // Render
+  await page.render({
+    canvasContext: context,
+    viewport: viewport,
+    intent: "display",
+    annotationMode: 0,
+    renderInteractiveForms: false,
+  }).promise;
 
-    // Fill with white background
-    context.fillStyle = "#FFFFFF";
-    context.fillRect(0, 0, viewport.width, viewport.height);
+  // Copy to new canvas to isolate from PDF.js
+  const imageData = context.getImageData(0, 0, viewport.width, viewport.height);
+  const safeCanvas = createCanvas(viewport.width, viewport.height);
+  const safeContext = safeCanvas.getContext("2d");
+  safeContext.putImageData(imageData, 0, 0);
 
-    const renderTask = page.render({
-      canvasContext: context,
-      viewport,
-      canvasFactory,
-      intent: "display",
-      annotationMode: 0,
-      renderInteractiveForms: false,
-    });
-
-    await renderTask.promise;
-
-    const result = { canvas, width: viewport.width, height: viewport.height };
-    
-    // Delayed cleanup after 100ms
-    setTimeout(async () => {
-      try {
-        if (page) page.cleanup().catch(() => {});
-        if (pdf) {
-          pdf.cleanup().catch(() => {});
-          pdf.destroy().catch(() => {});
-        }
-        if (loadingTask) loadingTask.destroy().catch(() => {});
-      } catch (e) {
-        // Ignore
-      }
-    }, 100);
-    
-    return result;
-  } catch (error) {
-    throw error;
-  }
+  return { 
+    canvas: safeCanvas, 
+    width: viewport.width, 
+    height: viewport.height 
+  };
 }
-
 
 async function renderPdfPageForWebp(pdfBuffer, scale = 2.5) {
   const loadingTask = pdfjsLib.getDocument({
@@ -198,57 +175,39 @@ async function renderPdfPageForWebp(pdfBuffer, scale = 2.5) {
     useSystemFonts: false,
     disableFontFace: true,
     verbosity: 0,
+    useWorkerFetch: false,
+    isEvalSupported: false,
   });
 
   const pdf = await loadingTask.promise;
   const page = await pdf.getPage(1);
   const viewport = page.getViewport({ scale });
-  const canvasFactory = new SafeCanvasFactory();
-  const { canvas, context } = canvasFactory.create(
-    viewport.width,
-    viewport.height
-  );
+  
+  const canvas = createCanvas(viewport.width, viewport.height);
+  const context = canvas.getContext("2d");
 
-  // Fill with white background
   context.fillStyle = "#FFFFFF";
   context.fillRect(0, 0, viewport.width, viewport.height);
 
-  const renderTask = page.render({
+  await page.render({
     canvasContext: context,
-    viewport,
-    canvasFactory,
+    viewport: viewport,
     intent: "display",
     annotationMode: 0,
     renderInteractiveForms: false,
-  });
+  }).promise;
 
-  await renderTask.promise;
+  const imageData = context.getImageData(0, 0, viewport.width, viewport.height);
+  const safeCanvas = createCanvas(viewport.width, viewport.height);
+  const safeContext = safeCanvas.getContext("2d");
+  safeContext.putImageData(imageData, 0, 0);
 
-  // Return canvas - NO CLEANUP
-  // Objects will be garbage collected automatically
-  return { canvas, width: viewport.width, height: viewport.height };
+  return { 
+    canvas: safeCanvas, 
+    width: viewport.width, 
+    height: viewport.height 
+  };
 }
-
-
-
-async function renderPdfPageToWebp(pdfBuffer, scale = 2.0) {
-  try {
-    const { canvas } = await renderPdfPageForWebp(pdfBuffer, scale);
-
-    // Convert to WebP buffer
-    const webpBuffer = canvas.toBuffer("image/webp", {
-      quality: 92,
-      alphaQuality: 100,
-      lossless: false,
-    });
-
-    return webpBuffer;
-  } catch (error) {
-    console.error("Error in renderPdfPageToWebp:", error.message);
-    throw error;
-  }
-}
-
 function sanitizeFilename(name) {
   return name
     .normalize("NFD")
