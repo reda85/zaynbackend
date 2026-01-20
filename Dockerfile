@@ -4,6 +4,9 @@ FROM node:20-slim
 RUN apt-get update && \
     apt-get install -y \
       qpdf \
+      ghostscript \
+      poppler-utils \
+      libfontconfig1 \
       libcairo2 \
       libpango-1.0-0 \
       libjpeg62-turbo \
