@@ -11,10 +11,13 @@ import { renderToStream } from "@react-pdf/renderer";
 import path from "path";
 import { fileURLToPath } from "url";
 import admin from 'firebase-admin';
-import { execSync } from "child_process";
+import { execSync,  execFileSync } from "child_process";
 import multer from "multer";
 import fs from "fs-extra";
-import crypto from "crypto";  
+import crypto from "crypto"; 
+import { fromBuffer } from "pdf2pic";
+import os from "os";
+
 
 console.log("QPDF VERSION:", execSync("qpdf --version").toString())
 
@@ -69,6 +72,12 @@ async function loadPdfReportComponent() {
   return PdfReportServer;
 }
 
+
+
+
+
+
+
 // ------------------------
 // Express setup
 const app = express();
@@ -82,7 +91,7 @@ app.use((req, res, next) => {
 // Supabase client
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 
@@ -101,57 +110,153 @@ try {
 }
 
 
-// ------------------------
-// Render first page to canvas
-async function renderPdfPage(pdfBuffer, scale = 2.5) {
-  try {
-    const loadingTask = pdfjsLib.getDocument({
-      data: new Uint8Array(pdfBuffer),
-      useSystemFonts: false, // Changed to false
-      disableFontFace: true, // Changed to true - prevents font rendering issues
-      standardFontDataUrl: null,
-      verbosity: 0
-    });
-    
-    const pdf = await loadingTask.promise;
-    const page = await pdf.getPage(1);
-    
-    // Use scale of 2.5 for good balance
-    const viewport = page.getViewport({ scale: scale });
-    
-    const canvas = createCanvas(viewport.width, viewport.height);
-    const ctx = canvas.getContext("2d", {
-      alpha: false // Disable alpha channel for cleaner rendering
-    });
-    
-    // Fill white background before rendering
-    ctx.fillStyle = "#FFFFFF";
-    ctx.fillRect(0, 0, viewport.width, viewport.height);
-    
-    const renderContext = {
-      canvasContext: ctx,
-      viewport: viewport,
-      intent: 'display',
-      renderInteractiveForms: false,
-      enableWebGL: false,
-      background: 'white',
-      annotationMode: 0, // Disable annotations
-      renderTextLayer: false // Disable text layer if it's causing issues
-    };
-    
-    const renderTask = page.render(renderContext);
-    await renderTask.promise;
-    
-    // Clean up
-    await pdf.cleanup();
-    
-    console.log(`PDF rendered successfully at ${viewport.width}x${viewport.height}`);
-    
-    return { canvas, width: viewport.width, height: viewport.height };
-  } catch (error) {
-    console.error("Error rendering PDF page:", error);
-    throw new Error(`Failed to render PDF: ${error.message}`);
+/// Fixed SafeCanvasFactory - prevents the napi crash
+// Fixed SafeCanvasFactory - prevents the napi crash
+class SafeCanvasFactory {
+  create(width, height) {
+    const canvas = createCanvas(width, height);
+    const context = canvas.getContext("2d");
+    return { canvas, context };
   }
+  
+  reset(canvasAndContext, width, height) {
+    // Do nothing - avoid modifying canvas
+    return;
+  }
+  
+  destroy(canvasAndContext) {
+    // ⭐ CRITICAL: Do absolutely nothing
+    // Let garbage collection handle everything
+    return;
+  }
+}
+// Updated renderPdfPage function with better cleanup
+async function renderPdfPage(pdfBuffer, scale = 2.5) {
+  let loadingTask = null;
+  let pdf = null;
+  let page = null;
+  
+  try {
+    loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(pdfBuffer),
+      useSystemFonts: false,
+      disableFontFace: true,
+      verbosity: 0,
+    });
+
+    pdf = await loadingTask.promise;
+    page = await pdf.getPage(1);
+
+    const viewport = page.getViewport({ scale });
+    const canvasFactory = new SafeCanvasFactory();
+    const { canvas, context } = canvasFactory.create(
+      viewport.width,
+      viewport.height
+    );
+
+    // Fill with white background
+    context.fillStyle = "#FFFFFF";
+    context.fillRect(0, 0, viewport.width, viewport.height);
+
+    const renderTask = page.render({
+      canvasContext: context,
+      viewport,
+      canvasFactory,
+      intent: "display",
+      annotationMode: 0,
+      renderInteractiveForms: false,
+    });
+
+    await renderTask.promise;
+
+    const result = { canvas, width: viewport.width, height: viewport.height };
+    
+    // Delayed cleanup after 100ms
+    setTimeout(async () => {
+      try {
+        if (page) page.cleanup().catch(() => {});
+        if (pdf) {
+          pdf.cleanup().catch(() => {});
+          pdf.destroy().catch(() => {});
+        }
+        if (loadingTask) loadingTask.destroy().catch(() => {});
+      } catch (e) {
+        // Ignore
+      }
+    }, 100);
+    
+    return result;
+  } catch (error) {
+    throw error;
+  }
+}
+
+
+async function renderPdfPageForWebp(pdfBuffer, scale = 2.5) {
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(pdfBuffer),
+    useSystemFonts: false,
+    disableFontFace: true,
+    verbosity: 0,
+  });
+
+  const pdf = await loadingTask.promise;
+  const page = await pdf.getPage(1);
+  const viewport = page.getViewport({ scale });
+  const canvasFactory = new SafeCanvasFactory();
+  const { canvas, context } = canvasFactory.create(
+    viewport.width,
+    viewport.height
+  );
+
+  // Fill with white background
+  context.fillStyle = "#FFFFFF";
+  context.fillRect(0, 0, viewport.width, viewport.height);
+
+  const renderTask = page.render({
+    canvasContext: context,
+    viewport,
+    canvasFactory,
+    intent: "display",
+    annotationMode: 0,
+    renderInteractiveForms: false,
+  });
+
+  await renderTask.promise;
+
+  // Return canvas - NO CLEANUP
+  // Objects will be garbage collected automatically
+  return { canvas, width: viewport.width, height: viewport.height };
+}
+
+
+
+async function renderPdfPageToWebp(pdfBuffer, scale = 2.0) {
+  try {
+    const { canvas } = await renderPdfPageForWebp(pdfBuffer, scale);
+
+    // Convert to WebP buffer
+    const webpBuffer = canvas.toBuffer("image/webp", {
+      quality: 92,
+      alphaQuality: 100,
+      lossless: false,
+    });
+
+    return webpBuffer;
+  } catch (error) {
+    console.error("Error in renderPdfPageToWebp:", error.message);
+    throw error;
+  }
+}
+
+function sanitizeFilename(name) {
+  return name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/_{2,}/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .substring(0, 200);
 }
 
 // ------------------------
@@ -247,7 +352,12 @@ async function cropZoom(pdfImg, xNorm, yNorm, size = 800) {
 // API endpoint
 
 
+
+
+
 app.post("/api/upload-pdf", upload.single("file"), async (req, res) => {
+  let tmpDir;
+
   try {
     const { projectId } = req.body;
     const file = req.file;
@@ -255,125 +365,171 @@ app.post("/api/upload-pdf", upload.single("file"), async (req, res) => {
     if (!file) return res.status(400).json({ error: "No file uploaded" });
     if (!projectId) return res.status(400).json({ error: "Missing projectId" });
 
-    const tmpDir = `/tmp/${crypto.randomUUID()}`;
+    // Use OS-appropriate temp directory
+    const osTmpDir = process.env.TMPDIR || process.env.TMP || process.env.TEMP || '/tmp';
+    tmpDir = path.join(osTmpDir, crypto.randomUUID());
     await fs.ensureDir(tmpDir);
 
-    const inputPath = `${tmpDir}/input.pdf`;
-    const linearizedPath = `${tmpDir}/linearized.pdf`;
-    const pagesDir = `${tmpDir}/pages`;
-
-    await fs.writeFile(inputPath, file.buffer);
-
-    // 1️⃣ Linearize PDF
-    execSync(`qpdf "${inputPath}" --linearize "${linearizedPath}"`);
-
-    // 2️⃣ Get page count
-    const pageCount = Number(execSync(`qpdf --show-npages "${linearizedPath}"`).toString());
+    const inputPdf = path.join(tmpDir, "input.pdf");
+    const linearizedPdf = path.join(tmpDir, "linearized.pdf");
+    const pagesDir = path.join(tmpDir, "pages");
 
     await fs.ensureDir(pagesDir);
+    await fs.writeFile(inputPdf, file.buffer);
 
-    // 🔧 Sanitize filename: remove special characters, accents, and spaces
-    const sanitizeFilename = (name) => {
-      return name
-        .normalize('NFD')                      // Decompose accented characters
-        .replace(/[\u0300-\u036f]/g, '')      // Remove diacritics
-        .replace(/[^a-zA-Z0-9._-]/g, '_')     // Replace invalid chars with underscore
-        .replace(/_{2,}/g, '_')               // Replace multiple underscores with single
-        .replace(/^_+|_+$/g, '')              // Remove leading/trailing underscores
-        .substring(0, 200);                   // Limit length
-    };
+    // 1️⃣ Linearize PDF
+    execSync(`qpdf "${inputPdf}" --linearize "${linearizedPdf}"`);
 
-    const originalBaseName = file.originalname.replace(/\.pdf$/i, '');
-    const fileBaseName = sanitizeFilename(originalBaseName);
+    // 2️⃣ Get page count
+    const pageCount = Number(
+      execSync(`qpdf --show-npages "${linearizedPdf}"`).toString().trim()
+    );
 
-    console.log(`📄 Original filename: ${originalBaseName}`);
-    console.log(`✨ Sanitized filename: ${fileBaseName}`);
+    const originalBase = file.originalname.replace(/\.pdf$/i, "");
+    const safeBase = sanitizeFilename(originalBase);
 
-    const uploadedPages = [];
+    console.log("📄 Original filename:", originalBase);
+    console.log("✨ Sanitized base:", safeBase);
+    console.log("📊 Total pages:", pageCount);
+    console.log("🖥️  Platform:", process.platform);
+
+    const uploaded = [];
     const errors = [];
 
-    // 3️⃣ Split pages, upload to storage, and create database records
     for (let i = 1; i <= pageCount; i++) {
-      const sanitizedPageName = `${fileBaseName}-page${i}`;
-      const pagePath = `${pagesDir}/${sanitizedPageName}.pdf`;
+      const name = `${safeBase}-page${i}`;
+      const pagePdf = path.join(pagesDir, `${name}.pdf`);
 
       try {
-        // Split the page
-        execSync(`qpdf "${linearizedPath}" --pages "${linearizedPath}" ${i} -- "${pagePath}"`);
+        console.log(`\n📄 Processing page ${i}/${pageCount}...`);
 
-        const buffer = await fs.readFile(pagePath);
+        // Split page
+        execSync(
+          `qpdf "${linearizedPdf}" --pages "${linearizedPdf}" ${i} -- "${pagePdf}"`
+        );
 
-        // Upload to Supabase Storage with correct path structure: public/projectId/...
-        const storageFilePath = `public/${projectId}/${sanitizedPageName}.pdf`;
-        const { error: uploadError } = await supabase.storage
-          .from("project-plans")  // ✅ Correct bucket name
-          .upload(storageFilePath, buffer, {
+        const pdfBuffer = await fs.readFile(pagePdf);
+        console.log(`  ✓ Split PDF (${pdfBuffer.length} bytes)`);
+
+        // Upload PDF to storage
+        const pdfPath = `${projectId}/${name}.pdf`;
+        const { data: pdfData, error: pdfErr } = await supabase.storage
+          .from("project-plans")
+          .upload(pdfPath, pdfBuffer, {
             contentType: "application/pdf",
             upsert: true,
           });
 
-        if (uploadError) {
-          throw new Error(`Storage upload failed: ${uploadError.message}`);
+        if (pdfErr) {
+          console.error(`  ❌ PDF upload error:`, pdfErr);
+          throw new Error(`PDF upload failed: ${pdfErr.message}`);
         }
+        console.log(`  ✓ Uploaded PDF to storage`);
 
-        // Insert into database with original name (for display) but sanitized file_url
-        const { data: newPlan, error: dbError } = await supabase
-          .from('plans')
-          .insert({
-            name: `${originalBaseName}-page${i}`,  // Keep original name for display
-            project_id: projectId,
-            file_url: storageFilePath,  // Use sanitized path with 'public' prefix
+        // Generate WebP using Ghostscript (works everywhere)
+        console.log(`  🖼️  Generating WebP...`);
+        
+        const tempPng = path.join(pagesDir, `${name}-%d.png`);
+        const outputPng = path.join(pagesDir, `${name}-1.png`);
+        
+        // Use Ghostscript (cross-platform, bundled with most PDF tools)
+        const gsCommand = process.platform === 'win32' ? 'gswin64c' : 'gs';
+        
+        try {
+          execSync(
+            `${gsCommand} -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r150 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${tempPng}" "${pagePdf}"`,
+            { stdio: 'pipe' }
+          );
+          
+          console.log(`  ✓ PNG generated via Ghostscript`);
+        } catch (gsError) {
+          // Fallback: try 'gs' command on Windows too (some installations use 'gs')
+          console.log(`  ⚠️  Trying alternate Ghostscript command...`);
+          execSync(
+            `gs -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r150 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${tempPng}" "${pagePdf}"`,
+            { stdio: 'pipe' }
+          );
+          console.log(`  ✓ PNG generated via Ghostscript (alternate)`);
+        }
+        
+        // Convert PNG to WebP using Sharp
+        const sharp = (await import('sharp')).default;
+        const webpBuffer = await sharp(outputPng)
+          .webp({ 
+            quality: 95,      // ⭐ Qualité augmentée (85 → 95)
+            effort: 6,        // ⭐ Plus d'effort de compression (4 → 6, max = 6)
+            lossless: false,  // true = qualité maximale mais fichiers très lourds
+            nearLossless: true, // ⭐ Quasi sans perte (meilleur compromis)
+            smartSubsample: false, // ⭐ Désactiver pour meilleure qualité
           })
-          .select()
-          .single();
+          .toBuffer();
+        
+        console.log(`  ✓ WebP generated (${webpBuffer.length} bytes)`);
+        
+        // Clean up temp PNG
+        await fs.unlink(outputPng).catch(() => {});
 
-        if (dbError) {
-          throw new Error(`Database insert failed: ${dbError.message}`);
+        // Upload WebP to storage
+        const webpStorage = `${projectId}/${name}.webp`;
+        const { data: webpData, error: webpErr } = await supabase.storage
+          .from("project-plans")
+          .upload(webpStorage, webpBuffer, {
+            contentType: "image/webp",
+            upsert: true,
+          });
+
+        if (webpErr) {
+          console.error(`  ❌ WebP upload error:`, webpErr);
+          throw new Error(`WebP upload failed: ${webpErr.message}`);
         }
+        console.log(`  ✓ Uploaded WebP to storage`);
 
-        uploadedPages.push(newPlan);
-        console.log(`✅ Page ${i}/${pageCount} uploaded successfully`);
-
-      } catch (pageError) {
-        console.error(`❌ Error processing page ${i}:`, pageError.message);
-        errors.push({
-          page: i,
-          error: pageError.message
+        // Save to database
+        const { error: dbErr } = await supabase.from("plans").insert({
+          project_id: projectId,
+          name: `${originalBase}-page${i}`,
+          file_url: pdfPath,
+          webp_url: webpStorage,
         });
+
+        if (dbErr) throw new Error(`Database insert failed: ${dbErr.message}`);
+        console.log(`  ✓ Saved to database`);
+
+        uploaded.push(i);
+        console.log(`✅ Page ${i}/${pageCount} completed successfully`);
+
+      } catch (err) {
+        console.error(`❌ Page ${i} failed:`, err.message);
+        console.error(`   Stack:`, err.stack);
+        errors.push({ page: i, error: err.message });
       }
     }
 
-    // Clean up temporary files
+    // Cleanup temp directory
     await fs.remove(tmpDir);
+    console.log("\n🧹 Cleaned up temporary files");
 
-    // Check if all pages failed
-    if (uploadedPages.length === 0) {
+    if (!uploaded.length) {
       return res.status(500).json({ 
-        error: "Failed to upload any pages", 
-        details: errors 
+        error: "All pages failed to process", 
+        errors 
       });
     }
 
-    // Return success with details
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       pageCount,
-      fileBaseName: originalBaseName,  // Return original name
-      uploadedCount: uploadedPages.length,
-      failedCount: errors.length,
-      errors: errors.length > 0 ? errors : undefined
+      uploaded: uploaded.length,
+      failed: errors.length,
+      errors: errors.length ? errors : undefined,
     });
 
+    console.log(`\n✨ Upload complete: ${uploaded.length}/${pageCount} pages successful`);
+
   } catch (err) {
-    console.error("PDF upload/split error:", err);
-    
-    // Try to clean up on error
-    try {
-      if (tmpDir) await fs.remove(tmpDir);
-    } catch (cleanupError) {
-      console.error("Cleanup error:", cleanupError);
-    }
-    
+    console.error("\n💥 UPLOAD ERROR:", err);
+    console.error("Stack:", err.stack);
+    if (tmpDir) await fs.remove(tmpDir).catch(() => {});
     res.status(500).json({ error: err.message });
   }
 });
