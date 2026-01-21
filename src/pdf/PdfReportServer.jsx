@@ -86,6 +86,7 @@ export default function PdfReportServer({
   categories = [],
   statuses = [],
   selectedProject = {},
+  fields = {},
 }) {
   const pinsByStatus = groupBy(selectedPins, "status_id");
 
@@ -188,7 +189,7 @@ export default function PdfReportServer({
                         { backgroundColor: status?.color || "#666" },
                       ]}
                     >
-                      <Text style={tw("text-white text-xs")}>{status?.name || "Inconnu"}</Text>
+                    {fields.include("status") &&  <Text style={tw("text-white text-xs")}>{status?.name || "Inconnu"}</Text>}
                     </View>
                   </View>
 
@@ -199,7 +200,7 @@ export default function PdfReportServer({
                         {pin.projects?.project_number}-{pin.pin_number}
                       </Text>
                     </View>
-                    {pin.category_id && (
+                    {fields.include("category") && pin.category_id && (
                       <View style={tw("flex-row my-2")}>
                         <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Catégorie:</Text>
                         <Text style={tw("text-sm text-stone-800")}>{category?.name}</Text>
@@ -209,18 +210,18 @@ export default function PdfReportServer({
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Créé par:</Text>
                       <Text style={tw("text-sm text-stone-800")}>{pin.created_by?.name || "-"}</Text>
                     </View>
-                    <View style={tw("flex-row my-2")}>
+                    {fields.include("assignedTo") && <View style={tw("flex-row my-2")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Assigné à:</Text>
                       <Text style={tw("text-sm text-stone-800")}>{pin.assigned_to?.name || "-"}</Text>
-                    </View>
-                    <View style={tw("flex-row items-center my-2 mr-2")}>
+                    </View>}
+                    {fields.include("dueDate") && <View style={tw("flex-row items-center my-2 mr-2")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Échéance:</Text>
                       <Image src={ICONS.calendar} style={{ width: 14, height: 14 }} />
                       <Text style={tw("text-sm text-stone-800")}>
                         {pin.due_date ? new Date(pin.due_date).toLocaleDateString("fr-FR") : "-"}
                       </Text>
-                    </View>
-                    <View style={{ flexDirection: "row", marginTop: 8 }}>
+                    </View>}
+                    {fields.include("description") && <View style={tw("flex-row my-2 wrap")}>
   <Text style={{ width: 144, fontSize: 10, fontWeight: "bold", color: "#44403c" }}>
     Description:
   </Text>
@@ -230,14 +231,14 @@ export default function PdfReportServer({
     </Text>
   </View>
 </View>
-
+        }
                   </View>
                 </View>
 
                 {/* RIGHT COLUMN - IMAGES */}
                 <View style={{ width: "35%", alignItems: "center", flexShrink: 0 }}>
 
-                  {pin.snapshot && (
+                  {fields.include("snapshot") && pin.snapshot && (
                     <Image
                       src={pin.snapshot}
                       style={{
@@ -249,7 +250,7 @@ export default function PdfReportServer({
                       }}
                     />
                   )}
-                  {pin.pdf_name && (
+                  {fields.include("snapshot") && pin.pdf_name && (
                     <View style={tw("flex-row items-center gap-2 mt-3")}>
                       <Image src={ICONS.map} style={{ width: 16, height: 16 }} />
                       <Text style={tw("text-sm font-bold text-stone-800")}>{pin.pdf_name}</Text>
@@ -259,7 +260,7 @@ export default function PdfReportServer({
               </View>
 
               {/* PHOTOS GRID */}
-              {pin.pins_photos?.length > 0 && (
+              {fields.include("photos") && pin.pins_photos?.length > 0 && (
                 <View style={tw("mt-4")}>
                   <Text style={tw("text-sm font-bold text-stone-700 mb-2")}>Médias</Text>
                   <View style={tw("flex-row flex-wrap gap-3")}>
