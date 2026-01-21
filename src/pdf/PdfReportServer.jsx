@@ -220,10 +220,17 @@ export default function PdfReportServer({
                         {pin.due_date ? new Date(pin.due_date).toLocaleDateString("fr-FR") : "-"}
                       </Text>
                     </View>
-                    <View style={tw("flex-row my-2 wrap")}>
-                      <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Description:</Text>
-                      <Text style={tw("text-sm text-stone-800")}>{pin.note || "-"}</Text>
-                    </View>
+                    <View style={{ flexDirection: "row", marginTop: 8 }}>
+  <Text style={{ width: 144, fontSize: 10, fontWeight: "bold", color: "#44403c" }}>
+    Description:
+  </Text>
+  <View style={{ flex: 1 }}>
+    <Text style={{ fontSize: 10, color: "#292524", lineHeight: 1.4 }}>
+      {pin.note || "-"}
+    </Text>
+  </View>
+</View>
+
                   </View>
                 </View>
 
