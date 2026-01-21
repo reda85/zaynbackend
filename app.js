@@ -673,12 +673,13 @@ async function cropZoomRobust(pdfImg, xNorm, yNorm, size = 800) {
 // REWRITTEN /api/report ENDPOINT - More robust with better error handling
 // ========================================================================================
 
-app.get("/api/report", async (req, res) => {
+app.post("/api/report", async (req, res) => {
+  console.log("POST /api/report");
   const startTime = Date.now();
   
   try {
-    const { projectId, selectedIds } = req.query;
-    
+    const { projectId, selectedIds, fields } = req.body;
+    console.log(projectId, selectedIds, fields);
     // Validate inputs
     if (!projectId || !selectedIds) {
       return res.status(400).json({ 
@@ -686,7 +687,8 @@ app.get("/api/report", async (req, res) => {
       });
     }
 
-    const ids = selectedIds.split(",").map(id => id.trim());
+   // const ids = selectedIds.split(",").map(id => id.trim());
+   const ids = selectedIds;
     console.log(`\n${'='.repeat(80)}`);
     console.log(`📊 REPORT GENERATION STARTED`);
     console.log(`Project: ${projectId}`);
@@ -857,6 +859,7 @@ app.get("/api/report", async (req, res) => {
         selectedPins: preparedPins,
         categories: categories || [],
         statuses: statuses || [],
+      //  fields: fields || {},
         selectedProject: project
       })
     );
