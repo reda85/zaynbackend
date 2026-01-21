@@ -125,7 +125,7 @@ export default function PdfReportServer({
             </View>
             <View style={tw("flex-row w-1/2")}>
               <View style={tw("w-1/3")}>
-                <Text style={tw("text-xs text-stone-800 font-bold")}>Total tâches</Text>
+                <Text style={tw("text-xs text-stone-800 font-bold")}>Total</Text>
                 <Text style={tw("text-sm font-bold mt-2")}>{selectedPins.length}</Text>
               </View>
               <View style={tw("w-1/3 px-2")}>
@@ -141,7 +141,7 @@ export default function PdfReportServer({
 
           {/* Status Pills */}
           <View style={tw("mt-6")}>
-            <Text style={tw("text-sm font-bold text-stone-800")}>Tâches par statut</Text>
+            <Text style={tw("text-sm font-bold text-stone-800")}>Par statut</Text>
             <View style={tw("flex-row flex-wrap gap-2 mt-3")}>
               {Object.keys(pinsByStatus).map((statusId) => {
                 const status = statuses.find((s) => String(s.id) === String(statusId));
@@ -173,7 +173,8 @@ export default function PdfReportServer({
             <View key={pin.id || index} wrap={false}>
               <View style={tw("flex-row gap-8 my-6")} break={index > 0}>
                 {/* LEFT COLUMN - TEXT */}
-                <View style={{ flex: 1 }}>
+                <View style={{ width: "65%" }}>
+
                   <Text style={tw("text-lg font-bold text-stone-800")}>
                     {index + 1}. {pin?.name || "Tâche sans nom"}
                   </Text>
@@ -227,7 +228,8 @@ export default function PdfReportServer({
                 </View>
 
                 {/* RIGHT COLUMN - IMAGES */}
-                <View style={tw("items-center")}>
+                <View style={{ width: "35%", alignItems: "center", flexShrink: 0 }}>
+
                   {pin.snapshot && (
                     <Image
                       src={pin.snapshot}
