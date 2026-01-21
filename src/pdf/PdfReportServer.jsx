@@ -183,14 +183,14 @@ export default function PdfReportServer({
                   {/* Category + Status Pills */}
                   <View style={tw("flex-row items-center gap-2 mt-2")}>
                     {category && <PdfCategoryLabel category={category} status={status} />}
-                    <View
+                   {fields.status &&  <View
                       style={[
                         tw("rounded-full px-3 py-1"),
                         { backgroundColor: status?.color || "#666" },
                       ]}
                     >
-                    {fields.status &&  <Text style={tw("text-white text-xs")}>{status?.name || "Inconnu"}</Text>}
-                    </View>
+                     <Text style={tw("text-white text-xs")}>{status?.name || "Inconnu"}</Text>
+                    </View>}
                   </View>
 
                   <View style={tw("mt-3 my-2")}>

@@ -859,7 +859,7 @@ app.post("/api/report", async (req, res) => {
         selectedPins: preparedPins,
         categories: categories || [],
         statuses: statuses || [],
-      //  fields: fields || {},
+        fields: fields || {},
         selectedProject: project
       })
     );
