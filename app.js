@@ -433,70 +433,72 @@ app.post("/api/upload-pdf", upload.single("file"), async (req, res) => {
         }
         console.log(`  ✓ Uploaded PDF to storage`);
 
-        // Generate WebP using Ghostscript (works everywhere)
-        console.log(`  🖼️  Generating WebP...`);
+        // ⭐ Generate HIGH-RESOLUTION PNG for architectural plans
+        console.log(`  🖼️  Generating high-resolution PNG (300 DPI)...`);
         
         const tempPng = path.join(pagesDir, `${name}-%d.png`);
         const outputPng = path.join(pagesDir, `${name}-1.png`);
         
-        // Use Ghostscript (cross-platform, bundled with most PDF tools)
+        // Use Ghostscript with 300 DPI (excellent quality, manageable size)
         const gsCommand = process.platform === 'win32' ? 'gswin64c' : 'gs';
         
         try {
           execSync(
-            `${gsCommand} -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r150 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${tempPng}" "${pagePdf}"`,
+            `${gsCommand} -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r300 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${tempPng}" "${pagePdf}"`,
             { stdio: 'pipe' }
           );
           
-          console.log(`  ✓ PNG generated via Ghostscript`);
+          console.log(`  ✓ High-res PNG generated via Ghostscript (300 DPI)`);
         } catch (gsError) {
-          // Fallback: try 'gs' command on Windows too (some installations use 'gs')
+          // Fallback: try 'gs' command on Windows too
           console.log(`  ⚠️  Trying alternate Ghostscript command...`);
           execSync(
-            `gs -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r150 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${tempPng}" "${pagePdf}"`,
+            `gs -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r300 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${tempPng}" "${pagePdf}"`,
             { stdio: 'pipe' }
           );
-          console.log(`  ✓ PNG generated via Ghostscript (alternate)`);
+          console.log(`  ✓ High-res PNG generated via Ghostscript (alternate, 300 DPI)`);
         }
         
-        // Convert PNG to WebP using Sharp
+        // ⭐ Read PNG and optimize it (lossless) before upload
         const sharp = (await import('sharp')).default;
-        const webpBuffer = await sharp(outputPng)
-          .webp({ 
-            quality: 95,      // ⭐ Qualité augmentée (85 → 95)
-            effort: 6,        // ⭐ Plus d'effort de compression (4 → 6, max = 6)
-            lossless: false,  // true = qualité maximale mais fichiers très lourds
-            nearLossless: true, // ⭐ Quasi sans perte (meilleur compromis)
-            smartSubsample: false, // ⭐ Désactiver pour meilleure qualité
+        
+        // Increase Sharp's pixel limit to handle large architectural plans
+        const pngBuffer = await sharp(outputPng, {
+          limitInputPixels: 268435456,  // 268 megapixels (4x default limit)
+        })
+          .png({
+            compressionLevel: 9,  // Maximum compression (still lossless)
+            adaptiveFiltering: true,  // Better compression
+            palette: false,  // Keep as RGB for quality
           })
           .toBuffer();
         
-        console.log(`  ✓ WebP generated (${webpBuffer.length} bytes)`);
+        console.log(`  ✓ PNG optimized (${pngBuffer.length} bytes, lossless)`);
         
         // Clean up temp PNG
         await fs.unlink(outputPng).catch(() => {});
 
-        // Upload WebP to storage
-        const webpStorage = `${projectId}/${name}.webp`;
-        const { data: webpData, error: webpErr } = await supabase.storage
+        // ⭐ Upload PNG directly to storage (no WebP conversion)
+        const pngStorage = `${projectId}/${name}.png`;
+        const { data: pngData, error: pngErr } = await supabase.storage
           .from("project-plans")
-          .upload(webpStorage, webpBuffer, {
-            contentType: "image/webp",
+          .upload(pngStorage, pngBuffer, {
+            contentType: "image/png",
             upsert: true,
           });
 
-        if (webpErr) {
-          console.error(`  ❌ WebP upload error:`, webpErr);
-          throw new Error(`WebP upload failed: ${webpErr.message}`);
+        if (pngErr) {
+          console.error(`  ❌ PNG upload error:`, pngErr);
+          throw new Error(`PNG upload failed: ${pngErr.message}`);
         }
-        console.log(`  ✓ Uploaded WebP to storage`);
+        console.log(`  ✓ Uploaded PNG to storage`);
 
-        // Save to database
+        // ⭐ Save to database with PNG URL instead of WebP
         const { error: dbErr } = await supabase.from("plans").insert({
           project_id: projectId,
           name: `${originalBase}-page${i}`,
           file_url: pdfPath,
-          webp_url: webpStorage,
+          png_url: pngStorage,  // Changed from webp_url to png_url
         });
 
         if (dbErr) throw new Error(`Database insert failed: ${dbErr.message}`);
@@ -540,7 +542,6 @@ app.post("/api/upload-pdf", upload.single("file"), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 /**
  * Render PDF page to image using Ghostscript (more reliable in Docker)
  * This completely bypasses PDF.js and @napi-rs/canvas compatibility issues
@@ -678,8 +679,8 @@ app.post("/api/report", async (req, res) => {
   const startTime = Date.now();
   
   try {
-    const { projectId, selectedIds, fields } = req.body;
-    console.log(projectId, selectedIds, fields);
+    const { projectId, selectedIds, fields, displayMode } = req.body;
+    console.log(projectId, selectedIds, fields, displayMode);
     // Validate inputs
     if (!projectId || !selectedIds) {
       return res.status(400).json({ 
@@ -860,6 +861,7 @@ app.post("/api/report", async (req, res) => {
         categories: categories || [],
         statuses: statuses || [],
         fields: fields || {},
+         displayMode: displayMode || "list",
         selectedProject: project
       })
     );
