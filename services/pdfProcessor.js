@@ -188,6 +188,7 @@ async function processPage({
   const name = `${safeBase}-page${pageNumber}`;
   const pagePdf = path.join(pagesDir, `${name}.pdf`);
   const outputPng = path.join(pagesDir, `${name}.png`);
+  const previewPng = path.join(pagesDir, `${name}_preview.png`);
   const tilesBaseDir = path.join(pagesDir, `${name}_tiles`);
   
   try {
@@ -198,7 +199,7 @@ async function processPage({
     );
     onPageProgress?.(20);
     
-    // 2. Rasterize avec Ghostscript
+    // 2. Rasterize avec Ghostscript (haute résolution pour les tiles - 600 DPI)
     const gsCommand = process.platform === 'win32' ? 'gswin64c' : 'gs';
     execSync(
       `${gsCommand} -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r600 -dBufferSpace=1000000000 -sOutputFile="${outputPng}" "${pagePdf}"`,
@@ -207,34 +208,47 @@ async function processPage({
         timeout: 120000 // 2 minutes max par page
       }
     );
+    onPageProgress?.(40);
+    
+    // 2.5. Créer une version basse résolution pour l'affichage direct (150 DPI)
+    console.log(`[${requestId}] 🖼️  Generating preview PNG at 150 DPI...`);
+    execSync(
+      `${gsCommand} -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r150 -dBufferSpace=500000000 -sOutputFile="${previewPng}" "${pagePdf}"`,
+      { 
+        maxBuffer: 1024 * 1024 * 50, // 50MB buffer
+        timeout: 120000
+      }
+    );
     onPageProgress?.(50);
     
-    // 2.5. Upload du PNG vers Supabase
-    const pngStoragePath = `${projectId}/previews/${name}.png`;
-    console.log(`[${requestId}] 📤 Uploading PNG to: ${pngStoragePath}`);
+    // 2.6. Upload du PNG basse résolution vers Supabase (pour affichage)
+    const previewStoragePath = `${projectId}/previews/${name}.png`;
+    console.log(`[${requestId}] 📤 Uploading preview PNG (150 DPI) to: ${previewStoragePath}`);
     
-    const pngBuffer = await fs.readFile(outputPng);
-    const { error: pngUploadError } = await supabaseClient.storage
+    const previewBuffer = await fs.readFile(previewPng);
+    console.log(`[${requestId}] 📦 Preview PNG size: ${(previewBuffer.length / 1024 / 1024).toFixed(2)} MB`);
+    
+    const { error: previewUploadError } = await supabaseClient.storage
       .from('project-plans')
-      .upload(pngStoragePath, pngBuffer, {
+      .upload(previewStoragePath, previewBuffer, {
         contentType: 'image/png',
         cacheControl: '31536000',
         upsert: true
       });
     
-    if (pngUploadError) {
-      console.error(`[${requestId}] ❌ PNG upload failed:`, pngUploadError);
-      throw pngUploadError;
+    if (previewUploadError) {
+      console.error(`[${requestId}] ❌ Preview PNG upload failed:`, previewUploadError);
+      throw previewUploadError;
     }
     
-    console.log(`[${requestId}] ✅ PNG uploaded successfully`);
+    console.log(`[${requestId}] ✅ Preview PNG uploaded successfully`);
     
     // Mettre à jour png_url pour la première page uniquement
     if (pageNumber === 1) {
       const { error: updateError } = await supabaseClient
         .from('plans')
         .update({ 
-          png_url: pngStoragePath,
+          png_url: previewStoragePath,
           processing_progress: 55
         })
         .eq('id', planId);
@@ -244,7 +258,7 @@ async function processPage({
       }
     }
     
-    // 3. Tiling avec Sharp
+    // 3. Tiling avec Sharp (utilise le PNG haute résolution)
     const sharp = (await import('sharp')).default;
     
     const image = sharp(outputPng, { 
@@ -277,8 +291,9 @@ async function processPage({
     // 5. Pas de création d'entrée séparée par page
     // Les tiles sont simplement uploadées et le plan principal sera mis à jour à la fin
     
-    // Cleanup PNG pour libérer l'espace disque
+    // Cleanup PNG et preview pour libérer l'espace disque
     await fs.remove(outputPng);
+    await fs.remove(previewPng);
     await fs.remove(pagePdf);
     await fs.remove(tilesBaseDir);
     await fs.remove(filesDir);
