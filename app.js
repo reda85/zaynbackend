@@ -22,6 +22,11 @@ import os from "os";
 
 import { promisify } from 'util';
 import { exec as execCallback } from 'child_process';
+
+import uploadRoutes from './routes/upload.js';
+import tilesRoutes from './routes/tiles.js';
+import { worker, pdfProcessingQueue }from './queues/pdfProcessingQueue.js';
+
 const execAsync = promisify(execCallback);
 
 
@@ -103,6 +108,9 @@ const supabase = createClient(
 
 
 
+
+
+
 // ------------------------
 // PDF.js worker configuration
 const { createRequire } = await import("module");
@@ -116,6 +124,34 @@ try {
   console.warn("PDF.js worker not configured properly:", e.message);
 }
 
+
+
+
+// ✅ Routes
+
+
+
+app.use('/api/upload-pdf', uploadRoutes);
+app.use('/api/tiles', tilesRoutes);
+
+
+
+console.log('🔄 PDF Processing Worker started');
+
+// ✅ Bull Board - Dashboard pour surveiller les jobs
+import { createBullBoard } from '@bull-board/api';
+import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
+import { ExpressAdapter } from '@bull-board/express';
+
+const serverAdapter = new ExpressAdapter();
+serverAdapter.setBasePath('/admin/queues');
+
+createBullBoard({
+  queues: [new BullMQAdapter(pdfProcessingQueue)],
+  serverAdapter: serverAdapter,
+});
+
+app.use('/admin/queues', serverAdapter.getRouter());
 
 /// Fixed SafeCanvasFactory - prevents the napi crash
 // Fixed SafeCanvasFactory - prevents the napi crash
@@ -362,186 +398,136 @@ async function cropZoom(pdfImg, xNorm, yNorm, size = 800) {
 
 
 
-app.post("/api/upload-pdf", upload.single("file"), async (req, res) => {
+/*app.post("/api/upload-pdf", upload.single("file"), async (req, res) => {
   let tmpDir;
+  const requestId = crypto.randomUUID().slice(0, 8); // For log tracking
 
   try {
     const { projectId } = req.body;
     const file = req.file;
 
-    if (!file) return res.status(400).json({ error: "No file uploaded" });
-    if (!projectId) return res.status(400).json({ error: "Missing projectId" });
+    console.log(`[${requestId}] 🚀 Start Upload: ${file?.originalname}, Project: ${projectId}`);
 
-    // Use OS-appropriate temp directory
-    const osTmpDir = process.env.TMPDIR || process.env.TMP || process.env.TEMP || '/tmp';
-    tmpDir = path.join(osTmpDir, crypto.randomUUID());
+    if (!file || !projectId) return res.status(400).json({ error: "Missing file or projectId" });
+
+    const osTmpDir = process.env.TMPDIR || process.env.TMP || '/tmp';
+    tmpDir = path.join(osTmpDir, `zyn-${requestId}`);
     await fs.ensureDir(tmpDir);
 
     const inputPdf = path.join(tmpDir, "input.pdf");
     const linearizedPdf = path.join(tmpDir, "linearized.pdf");
     const pagesDir = path.join(tmpDir, "pages");
-
     await fs.ensureDir(pagesDir);
+    
     await fs.writeFile(inputPdf, file.buffer);
+    console.log(`[${requestId}] 📁 PDF saved to temp: ${inputPdf}`);
 
-    // 1️⃣ Linearize PDF
+    // 1️⃣ Linearize
+    console.log(`[${requestId}] ⚡ Linearizing PDF...`);
     execSync(`qpdf "${inputPdf}" --linearize "${linearizedPdf}"`);
 
-    // 2️⃣ Get page count
-    const pageCount = Number(
-      execSync(`qpdf --show-npages "${linearizedPdf}"`).toString().trim()
-    );
+    const pageCount = Number(execSync(`qpdf --show-npages "${linearizedPdf}"`).toString().trim());
+    const safeBase = file.originalname.replace(/\.pdf$/i, "").replace(/[^a-z0-9]/gi, '_');
+    console.log(`[${requestId}] 📊 Pages to process: ${pageCount}`);
 
-    const originalBase = file.originalname.replace(/\.pdf$/i, "");
-    const safeBase = sanitizeFilename(originalBase);
-
-    console.log("📄 Original filename:", originalBase);
-    console.log("✨ Sanitized base:", safeBase);
-    console.log("📊 Total pages:", pageCount);
-    console.log("🖥️  Platform:", process.platform);
-
-    const uploaded = [];
-    const errors = [];
+    const uploadedPages = [];
 
     for (let i = 1; i <= pageCount; i++) {
+      console.log(`\n[${requestId}] --- Processing Page ${i} ---`);
       const name = `${safeBase}-page${i}`;
       const pagePdf = path.join(pagesDir, `${name}.pdf`);
+      const outputPng = path.join(pagesDir, `${name}.png`);
+      const tilesBaseDir = path.join(pagesDir, `${name}_tiles`);
 
-      try {
-        console.log(`\n📄 Processing page ${i}/${pageCount}...`);
+      // 2️⃣ Extract single page
+      execSync(`qpdf "${linearizedPdf}" --pages "${linearizedPdf}" ${i} -- "${pagePdf}"`);
+      console.log(`[${requestId}] Page ${i}: PDF extracted`);
 
-        // Split page
-        execSync(
-          `qpdf "${linearizedPdf}" --pages "${linearizedPdf}" ${i} -- "${pagePdf}"`
-        );
+      // 3️⃣ Rasterize to 600 DPI
+      console.log(`[${requestId}] Page ${i}: Ghostscript rasterizing to 600 DPI...`);
+      const gsCommand = process.platform === 'win32' ? 'gswin64c' : 'gs';
+      // Added -dBufferSpace to help Ghostscript with memory
+      execSync(`${gsCommand} -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r600 -dBufferSpace=1000000000 -sOutputFile="${outputPng}" "${pagePdf}"`);
 
-        const pdfBuffer = await fs.readFile(pagePdf);
-        console.log(`  ✓ Split PDF (${pdfBuffer.length} bytes)`);
-
-        // Upload PDF to storage
-        const pdfPath = `${projectId}/${name}.pdf`;
-        const { data: pdfData, error: pdfErr } = await supabase.storage
-          .from("project-plans")
-          .upload(pdfPath, pdfBuffer, {
-            contentType: "application/pdf",
-            upsert: true,
-          });
-
-        if (pdfErr) {
-          console.error(`  ❌ PDF upload error:`, pdfErr);
-          throw new Error(`PDF upload failed: ${pdfErr.message}`);
-        }
-        console.log(`  ✓ Uploaded PDF to storage`);
-
-        // ⭐ Generate HIGH-RESOLUTION PNG for architectural plans
-        console.log(`  🖼️  Generating high-resolution PNG (300 DPI)...`);
-        
-        const tempPng = path.join(pagesDir, `${name}-%d.png`);
-        const outputPng = path.join(pagesDir, `${name}-1.png`);
-        
-        // Use Ghostscript with 300 DPI (excellent quality, manageable size)
-        const gsCommand = process.platform === 'win32' ? 'gswin64c' : 'gs';
-        
-        try {
-          execSync(
-            `${gsCommand} -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r300 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${tempPng}" "${pagePdf}"`,
-            { stdio: 'pipe' }
-          );
-          
-          console.log(`  ✓ High-res PNG generated via Ghostscript (300 DPI)`);
-        } catch (gsError) {
-          // Fallback: try 'gs' command on Windows too
-          console.log(`  ⚠️  Trying alternate Ghostscript command...`);
-          execSync(
-            `gs -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r300 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${tempPng}" "${pagePdf}"`,
-            { stdio: 'pipe' }
-          );
-          console.log(`  ✓ High-res PNG generated via Ghostscript (alternate, 300 DPI)`);
-        }
-        
-        // ⭐ Read PNG and optimize it (lossless) before upload
-        const sharp = (await import('sharp')).default;
-        
-        // Increase Sharp's pixel limit to handle large architectural plans
-        const pngBuffer = await sharp(outputPng, {
-          limitInputPixels: 268435456,  // 268 megapixels (4x default limit)
-        })
-          .png({
-            compressionLevel: 9,  // Maximum compression (still lossless)
-            adaptiveFiltering: true,  // Better compression
-            palette: false,  // Keep as RGB for quality
-          })
-          .toBuffer();
-        
-        console.log(`  ✓ PNG optimized (${pngBuffer.length} bytes, lossless)`);
-        
-        // Clean up temp PNG
-        await fs.unlink(outputPng).catch(() => {});
-
-        // ⭐ Upload PNG directly to storage (no WebP conversion)
-        const pngStorage = `${projectId}/${name}.png`;
-        const { data: pngData, error: pngErr } = await supabase.storage
-          .from("project-plans")
-          .upload(pngStorage, pngBuffer, {
-            contentType: "image/png",
-            upsert: true,
-          });
-
-        if (pngErr) {
-          console.error(`  ❌ PNG upload error:`, pngErr);
-          throw new Error(`PNG upload failed: ${pngErr.message}`);
-        }
-        console.log(`  ✓ Uploaded PNG to storage`);
-
-        // ⭐ Save to database with PNG URL instead of WebP
-        const { error: dbErr } = await supabase.from("plans").insert({
-          project_id: projectId,
-          name: `${originalBase}-page${i}`,
-          file_url: pdfPath,
-          png_url: pngStorage,  // Changed from webp_url to png_url
-        });
-
-        if (dbErr) throw new Error(`Database insert failed: ${dbErr.message}`);
-        console.log(`  ✓ Saved to database`);
-
-        uploaded.push(i);
-        console.log(`✅ Page ${i}/${pageCount} completed successfully`);
-
-      } catch (err) {
-        console.error(`❌ Page ${i} failed:`, err.message);
-        console.error(`   Stack:`, err.stack);
-        errors.push({ page: i, error: err.message });
-      }
-    }
-
-    // Cleanup temp directory
-    await fs.remove(tmpDir);
-    console.log("\n🧹 Cleaned up temporary files");
-
-    if (!uploaded.length) {
-      return res.status(500).json({ 
-        error: "All pages failed to process", 
-        errors 
+      // 4️⃣ Tiling with Sharp (Increasing Pixel Limit)
+      console.log(`[${requestId}] Page ${i}: Sharp tiling started...`);
+      const sharp = (await import('sharp')).default;
+      
+      // CRITICAL: Increase Sharp's memory limit to handle 600DPI bitmaps
+      sharp.cache(false); // Disable cache to free memory immediately
+      
+      const image = sharp(outputPng, { 
+        limitInputPixels: false // THIS FIXES THE PIXEL LIMIT ERROR
       });
+
+      const metadata = await image.metadata();
+      console.log(`[${requestId}] Page ${i}: Dimensions ${metadata.width}x${metadata.height}`);
+
+      await image
+        .tile({
+          size: 512,
+          layout: 'dz',
+          container: 'fs'
+        })
+        .toFile(tilesBaseDir);
+      
+      console.log(`[${requestId}] Page ${i}: Tiling complete. Preparing storage upload...`);
+
+      // 5️⃣ Recursive Upload to Supabase
+      const filesDir = `${tilesBaseDir}_files`; // DeepZoom appends _files
+      
+      const uploadFolder = async (localPath, remotePrefix) => {
+        const items = await fs.readdir(localPath);
+        for (const item of items) {
+          const fullPath = path.join(localPath, item);
+          const remotePath = `${remotePrefix}/${item}`;
+          const stat = await fs.stat(fullPath);
+
+          if (stat.isDirectory()) {
+            await uploadFolder(fullPath, remotePath);
+          } else {
+            const buffer = await fs.readFile(fullPath);
+            const { error } = await supabase.storage.from("project-plans").upload(remotePath, buffer, {
+              contentType: "image/png", cacheControl: '3600', upsert: true
+            });
+            if (error) console.error(`[${requestId}] ❌ Upload Fail: ${remotePath}`, error.message);
+          }
+        }
+      };
+
+      const remoteTilesPath = `${projectId}/tiles/${name}`;
+      await uploadFolder(filesDir, `${remoteTilesPath}_files`);
+      console.log(`[${requestId}] Page ${i}: All tiles uploaded to Supabase`);
+
+      // 6️⃣ Database entry
+      const { error: dbErr } = await supabase.from("plans").insert({
+        project_id: projectId,
+        name: name,
+        file_url: `${projectId}/${name}.pdf`,
+        tiles_path: remoteTilesPath,
+        width: metadata.width,
+        height: metadata.height
+      });
+
+      if (dbErr) throw dbErr;
+      uploadedPages.push(i);
+      
+      // Cleanup the massive master PNG to save disk space during loop
+      await fs.remove(outputPng);
     }
 
-    res.json({
-      success: true,
-      pageCount,
-      uploaded: uploaded.length,
-      failed: errors.length,
-      errors: errors.length ? errors : undefined,
-    });
-
-    console.log(`\n✨ Upload complete: ${uploaded.length}/${pageCount} pages successful`);
+    await fs.remove(tmpDir);
+    console.log(`[${requestId}] ✅ Success! Processed ${uploadedPages.length} pages.`);
+    res.json({ success: true, pages: uploadedPages });
 
   } catch (err) {
-    console.error("\n💥 UPLOAD ERROR:", err);
-    console.error("Stack:", err.stack);
+    console.error(`[${requestId}] 💥 FATAL ERROR:`, err);
     if (tmpDir) await fs.remove(tmpDir).catch(() => {});
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, stack: err.stack });
   }
 });
+
+*/
 /**
  * Render PDF page to image using Ghostscript (more reliable in Docker)
  * This completely bypasses PDF.js and @napi-rs/canvas compatibility issues
@@ -679,7 +665,7 @@ app.post("/api/report", async (req, res) => {
   const startTime = Date.now();
   
   try {
-    const { projectId, selectedIds, fields, displayMode } = req.body;
+    const { projectId, selectedIds, fields, displayMode, templateConfig } = req.body;
     console.log(projectId, selectedIds, fields, displayMode);
     // Validate inputs
     if (!projectId || !selectedIds) {
@@ -853,7 +839,7 @@ app.post("/api/report", async (req, res) => {
     // ============================================================
     console.log("⏳ Step 4/4: Generating PDF report...");
     
-    const PdfComponent = await loadPdfReportComponent();
+ const PdfComponent = await loadPdfReportComponent();
     
     const pdfStream = await renderToStream(
       React.createElement(PdfComponent, {
@@ -861,8 +847,9 @@ app.post("/api/report", async (req, res) => {
         categories: categories || [],
         statuses: statuses || [],
         fields: fields || {},
-         displayMode: displayMode || "list",
-        selectedProject: project
+        displayMode: displayMode || "list",
+        selectedProject: project,
+        config: templateConfig || null // AJOUT DU TEMPLATE CONFIG
       })
     );
 
@@ -1527,6 +1514,16 @@ app.post('/api/notifications/subscribe-to-topic', async (req, res) => {
   }
 });
 
+
+// Stats endpoint
+app.get('/api/stats', async (req, res) => {
+  try {
+    const jobCounts = await pdfProcessingQueue.getJobCounts();
+    res.json(jobCounts);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get stats' });
+  }
+});
 
 // ------------------------
 // Start server
