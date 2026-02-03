@@ -393,7 +393,7 @@ async function updatePlanStatus(planId, status, progress, extraData = {}) {
     .eq('id', planId);
   
   if (error) {
-    console.error(`❌ Failed to update plan status:`, error);
+    console.error(` Failed to update plan status:`, error);
     throw error;
   }
   
