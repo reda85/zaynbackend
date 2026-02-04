@@ -372,7 +372,7 @@ async function uploadTilesBatch(localPath, remotePrefix, requestId) {
   
   await collectFiles(localPath);
   
-  console.log(`[${requestId}] ⏳ Waiting for ${uploadPromises.length} uploads to complete...`);
+  console.log(`[${requestId}]  Waiting for ${uploadPromises.length} uploads to complete...`);
   await Promise.all(uploadPromises);
   
   console.log(`[${requestId}] ✅ Uploaded ${uploadPromises.length} tiles`);
@@ -393,7 +393,7 @@ async function updatePlanStatus(planId, status, progress, extraData = {}) {
     .eq('id', planId);
   
   if (error) {
-    console.error(` Failed to update plan status:`, error);
+    console.error(`Failed to update plan status:`, error);
     throw error;
   }
   
