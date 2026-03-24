@@ -22,6 +22,7 @@ import { exec as execCallback } from "child_process";
 
 import uploadRoutes from "./routes/upload.js";
 import tilesRoutes from "./routes/tiles.js";
+import updatePlanRouter from "./routes/update-plan.js";
 import { worker, pdfProcessingQueue } from "./queues/pdfProcessingQueue.js";
 
 const execAsync = promisify(execCallback);
@@ -184,6 +185,8 @@ try {
 // Routes
 app.use("/api/upload-pdf", uploadRoutes);
 app.use("/api/tiles", tilesRoutes);
+//const updatePlanRouter = require('./routes/update-plan')
+app.use('/api/update-plan', updatePlanRouter);
 
 console.log("🔄 PDF Processing Worker started");
 
