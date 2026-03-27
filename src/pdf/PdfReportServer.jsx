@@ -285,11 +285,12 @@ const TableView = ({ selectedPins, categories, statuses, fields, config }) => {
 };
 
 // === LIST VIEW COMPONENT ===
+// === LIST VIEW COMPONENT ===
 const ListView = ({ selectedPins, categories, statuses, fields, config }) => {
   const snapshotSizeMap = {
-    small: { width: 150, height: 150 },
-    medium: { width: 200, height: 200 },
-    large: { width: 220, height: 220 },
+    small: { width: 100, height: 100 },
+    medium: { width: 120, height: 120 },
+    large: { width: 140, height: 140 },
   };
 
   const snapshotSize = snapshotSizeMap[config?.listView?.snapshotSize || 'large'];
@@ -303,23 +304,23 @@ const ListView = ({ selectedPins, categories, statuses, fields, config }) => {
 
         return (
           <View key={pin.id || index} wrap={false}>
-            <View style={tw("flex-row gap-8 my-6")} break={index > 0}>
+            <View style={tw("flex-row gap-4 my-3")} break={index > 0}>
               {/* LEFT COLUMN - TEXT */}
               <View style={{ width: "65%" }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
                   {config?.listView?.showIndex && (
-                    <Text style={[tw("text-lg font-bold"), { color: primaryColor }]}>
+                    <Text style={[tw("text-base font-bold"), { color: primaryColor }]}>
                       {index + 1}.
                     </Text>
                   )}
-                  <Text style={tw("text-lg font-bold text-stone-800")}>
+                  <Text style={tw("text-base font-bold text-stone-800")}>
                     {pin?.name || "Tâche sans nom"}
                   </Text>
                 </View>
 
                 {/* Category + Status Pills */}
                 {(config?.listView?.showCategoryIcon || config?.listView?.showStatusPill) && (
-                  <View style={tw("flex-row items-center gap-2 mt-2")}>
+                  <View style={tw("flex-row items-center gap-2 mt-1")}>
                     {config?.listView?.showCategoryIcon && category && (
                       <PdfCategoryLabel category={category} status={status} />
                     )}
@@ -336,42 +337,42 @@ const ListView = ({ selectedPins, categories, statuses, fields, config }) => {
                   </View>
                 )}
 
-                <View style={tw("mt-3 my-2")}>
-                  <View style={tw("flex-row my-2")}>
+                <View style={tw("mt-2")}>
+                  <View style={tw("flex-row my-1")}>
                     <Text style={tw("text-sm font-bold text-stone-700 w-36")}>ID:</Text>
                     <Text style={tw("text-sm text-stone-800")}>
                       {pin.projects?.project_number}-{pin.pin_number}
                     </Text>
                   </View>
                   {fields.category && pin.category_id && (
-                    <View style={tw("flex-row my-2")}>
+                    <View style={tw("flex-row my-1")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Catégorie:</Text>
                       <Text style={tw("text-sm text-stone-800")}>{category?.name}</Text>
                     </View>
                   )}
                   {fields.createdBy && (
-                    <View style={tw("flex-row my-2")}>
+                    <View style={tw("flex-row my-1")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Créé par:</Text>
                       <Text style={tw("text-sm text-stone-800")}>{pin.created_by?.name || "-"}</Text>
                     </View>
                   )}
                   {fields.assignedTo && (
-                    <View style={tw("flex-row my-2")}>
+                    <View style={tw("flex-row my-1")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Assigné à:</Text>
                       <Text style={tw("text-sm text-stone-800")}>{pin.assigned_to?.name || "-"}</Text>
                     </View>
                   )}
                   {fields.dueDate && (
-                    <View style={tw("flex-row items-center my-2")}>
+                    <View style={tw("flex-row items-center my-1")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Échéance:</Text>
-                      <Image src={ICONS.calendar} style={{ width: 14, height: 14, marginRight: 4 }} />
+                      <Image src={ICONS.calendar} style={{ width: 12, height: 12, marginRight: 4 }} />
                       <Text style={tw("text-sm text-stone-800")}>
                         {pin.due_date ? new Date(pin.due_date).toLocaleDateString("fr-FR") : "-"}
                       </Text>
                     </View>
                   )}
                   {fields.description && (
-                    <View style={tw("flex-row my-2")}>
+                    <View style={tw("flex-row my-1")}>
                       <Text style={tw("text-sm font-bold text-stone-700 w-36")}>Description:</Text>
                       <View style={{ flex: 1 }}>
                         <Text style={tw("text-sm text-stone-800")}>
@@ -383,47 +384,64 @@ const ListView = ({ selectedPins, categories, statuses, fields, config }) => {
                 </View>
               </View>
 
-              {/* RIGHT COLUMN - IMAGES */}
+              {/* RIGHT COLUMN - SNAPSHOT */}
               <View style={{ width: "35%", alignItems: "center", flexShrink: 0 }}>
                 {fields.snapshot && pin.snapshot && (
-                  <Image
-                    src={pin.snapshot}
-                    style={{
-                      width: snapshotSize.width,
-                      height: snapshotSize.height,
-                      objectFit: "cover",
-                      border: config?.listView?.snapshotBorder 
-                        ? `${config.listView.snapshotBorderWidth || 4}pt solid ${primaryColor}` 
-                        : "4pt solid black",
-                      borderRadius: 4,
-                    }}
-                  />
-                )}
-                {fields.snapshot && pin.pdf_name && (
-                  <View style={tw("flex-row items-center gap-2 mt-3")}>
-                    <Image src={ICONS.map} style={{ width: 16, height: 16 }} />
-                    <Text style={tw("text-sm font-bold text-stone-800")}>{pin.pdf_name}</Text>
+                  <View style={{ alignItems: "center" }}>
+                    <Image
+                      src={pin.snapshot}
+                      style={{
+                        width: snapshotSize.width,
+                        height: snapshotSize.height,
+                        objectFit: "cover",
+                        border: config?.listView?.snapshotBorder
+                          ? `${config.listView.snapshotBorderWidth || 3}pt solid ${primaryColor}`
+                          : "3pt solid black",
+                        borderRadius: 4,
+                      }}
+                    />
+                    {/* Description under snapshot */}
+                    {pin.note && (
+                      <Text style={{ fontSize: 7, color: "#78716c", marginTop: 4, textAlign: "center", maxWidth: snapshotSize.width }}>
+                        {pin.note}
+                      </Text>
+                    )}
                   </View>
                 )}
+               {fields.snapshot && pin.pdf_name && (
+  <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 4, marginTop: 6, maxWidth: snapshotSize.width }}>
+    <Image src={ICONS.map} style={{ width: 10, height: 10, marginTop: 1, flexShrink: 0 }} />
+    <Text style={{ fontSize: 7, color: "#292524", flexShrink: 1, flexWrap: "wrap" }}>
+      {pin.pdf_name}
+    </Text>
+  </View>
+)}
               </View>
             </View>
 
             {/* PHOTOS GRID */}
             {fields.photos && pin.pins_photos?.length > 0 && (
-              <View style={tw("mt-4")}>
+              <View style={tw("mt-2")}>
                 <Text style={tw("text-sm font-bold text-stone-700 mb-2")}>Médias</Text>
                 <View style={tw("flex-row flex-wrap gap-3")}>
                   {pin.pins_photos.map((photo, i) => (
-                    <Image
-                      key={i}
-                      src={photo.public_url}
-                      style={{
-                        width: 140,
-                        height: 140,
-                        objectFit: "cover",
-                        borderRadius: 4,
-                      }}
-                    />
+                    <View key={i} style={{ alignItems: "center" }}>
+                      <Image
+                        src={photo.public_url}
+                        style={{
+                          width: 120,
+                          height: 120,
+                          objectFit: "cover",
+                          borderRadius: 4,
+                        }}
+                      />
+                      {/* Description under each photo */}
+                      {photo.description && (
+                        <Text style={{ fontSize: 7, color: "#78716c", marginTop: 3, textAlign: "center", maxWidth: 120 }}>
+                          {photo.description}
+                        </Text>
+                      )}
+                    </View>
                   ))}
                 </View>
               </View>
@@ -434,8 +452,8 @@ const ListView = ({ selectedPins, categories, statuses, fields, config }) => {
               <View
                 style={{
                   height: 1,
-                  backgroundColor: "#ccc",
-                  marginVertical: 20,
+                  backgroundColor: "#e7e5e4",
+                  marginVertical: 12,
                   width: "100%",
                 }}
               />
