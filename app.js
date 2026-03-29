@@ -25,6 +25,14 @@ import tilesRoutes from "./routes/tiles.js";
 import updatePlanRouter from "./routes/update-plan.js";
 import { worker, pdfProcessingQueue } from "./queues/pdfProcessingQueue.js";
 
+
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Serve fonts statically
+
+
 const execAsync = promisify(execCallback);
 
 console.log("QPDF VERSION:", execSync("qpdf --version").toString());
@@ -167,8 +175,7 @@ const pdfjsLib = await (async () => {
   }
 })();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+
 
 const { createRequire } = await import("module");
 const require = createRequire(import.meta.url);
@@ -187,7 +194,16 @@ app.use("/api/upload-pdf", uploadRoutes);
 app.use("/api/tiles", tilesRoutes);
 //const updatePlanRouter = require('./routes/update-plan')
 app.use('/api/update-plan', updatePlanRouter);
-
+app.use('/fonts', (req, res, next) => {
+  if (req.path.endsWith('.woff'))  res.setHeader('Content-Type', 'font/woff')
+  if (req.path.endsWith('.woff2')) res.setHeader('Content-Type', 'font/woff2')
+  if (req.path.endsWith('.ttf'))   res.setHeader('Content-Type', 'font/ttf')
+  next()
+}, express.static(path.join(__dirname, 'fonts')))
+app.get('/api/test-font', (req, res) => {
+  const p = path.join(__dirname, 'fonts', 'Lato-Regular.ttf')
+  res.json({ path: p, exists: fs.existsSync(p) })
+})
 console.log("🔄 PDF Processing Worker started");
 
 // Bull Board
@@ -399,7 +415,7 @@ app.post("/api/report", async (req, res) => {
   const startTime = Date.now();
 
   try {
-    const { projectId, selectedIds, fields, displayMode, templateConfig } = req.body;
+    const { projectId, selectedIds, fields, displayMode, templateConfig, participants, customSections } = req.body;
 
     if (!projectId || !selectedIds) {
       return res.status(400).json({ error: "Missing required parameters: projectId and selectedIds" });
@@ -505,6 +521,8 @@ app.post("/api/report", async (req, res) => {
         displayMode: displayMode || "list",
         selectedProject: project,
         config: templateConfig || null,
+        participants: participants || [],
+        customSections: customSections || [],
       })
     );
 
