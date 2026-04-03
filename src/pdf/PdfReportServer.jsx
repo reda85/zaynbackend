@@ -147,10 +147,10 @@ const normalizeConfig = (config, displayMode) => {
       showOrganizationName: true,
       showProjectName:      true,
       showDate:             true,
-      showLogo:             false,
+      showLogo:             true,
       logoUrl:              '',
       logoSize:             'medium',
-      showClientLogo:       false,
+      showClientLogo:       true,
       clientLogoUrl:        '',
       clientLogoSize:       'medium',
       layout:               "horizontal",
@@ -464,25 +464,26 @@ const PhotoGalleryView = ({ selectedPins, statuses, config, fontFamily }) => {
       {rows.map((row, rowIndex) => (
         <View key={rowIndex} style={{ flexDirection: "row", gap: GAP, marginBottom: GAP }}>
           {row.map((item, i) => (
-            <View key={i} style={{ width: colWidth }}>
-              <View style={{ position: "relative" }}>
-                <Image src={item.photo.public_url} style={{ width: colWidth, height: colWidth, objectFit: "cover", borderRadius: 4 }} />
-                {showStatus && item.statusName && (
-                  <View style={{ position: "absolute", top: 4, right: 4, backgroundColor: item.statusColor, borderRadius: 9999, paddingVertical: 2, paddingHorizontal: 6 }}>
-                    <Text style={{ fontSize: 6, color: "white", fontFamily }}>{item.statusName}</Text>
-                  </View>
-                )}
-              </View>
-              {showName && (
-                <Text style={{ fontSize: 7, fontWeight: "bold", color: "#292524", marginTop: 3, fontFamily }} numberOfLines={1}>{item.pinName}</Text>
-              )}
-              {item.photo.description && (
-                <Text style={{ fontSize: 6, color: "#78716c", marginTop: 1, fontFamily }}>{item.photo.description}</Text>
-              )}
-              {showDescription && item.pinNote && (
-                <Text style={{ fontSize: 6, color: "#a8a29e", marginTop: 1, fontFamily }}>{item.pinNote}</Text>
-              )}
-            </View>
+            // In PhotoGalleryView, replace the caption block inside the row map:
+<View key={i} style={{ width: colWidth }}>
+  <View style={{ position: "relative" }}>
+    <Image src={item.photo.public_url} style={{ width: colWidth, height: colWidth, objectFit: "cover", borderRadius: 4 }} />
+    {showStatus && item.statusName && (
+      <View style={{ position: "absolute", top: 4, right: 4, backgroundColor: item.statusColor, borderRadius: 9999, paddingVertical: 2, paddingHorizontal: 6 }}>
+        <Text style={{ fontSize: 6, color: "white", fontFamily }}>{item.statusName}</Text>
+      </View>
+    )}
+  </View>
+  {showName && (
+    <Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", marginTop: 4, fontFamily, textAlign: "center" }} numberOfLines={1}>{item.pinName}</Text>
+  )}
+  {item.photo.description && (
+    <Text style={{ fontSize: 9, color: "#1d1d1f", marginTop: 2, fontFamily, textAlign: "center" }}>{item.photo.description}</Text>
+  )}
+  {showDescription && item.pinNote && (
+    <Text style={{ fontSize: 7, color: "#a8a29e", marginTop: 1, fontFamily, textAlign: "center" }}>{item.pinNote}</Text>
+  )}
+</View>
           ))}
         </View>
       ))}
@@ -665,9 +666,7 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
             <Text style={{ fontSize: 11, color: "#44403c", fontFamily }}>"Le projet progresse conformément au planning."</Text>
           </View>
         )}
-        {showParticipants && (
-          <ParticipantsSectionContent participants={participants} config={config} primaryColor={primaryColor} fontFamily={fontFamily} sectionTitles={sectionTitles} />
-        )}
+     
         <View style={{ marginTop: "auto", paddingTop: 20, borderTopWidth: 1, borderTopColor: "#e7e5e4", flexDirection: "row", justifyContent: "space-between" }}>
           <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>{selectedProject?.organizations?.name || "Organisation"}</Text>
           <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>{new Date().toLocaleDateString("fr-FR")}</Text>

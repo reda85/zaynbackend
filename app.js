@@ -511,20 +511,28 @@ app.post("/api/report", async (req, res) => {
     console.log(`✅ Snapshots: ${preparedPins.filter((p) => p.snapshot).length}/${pins.length}\n`);
     console.log("⏳ Step 4/4: Generating PDF report...");
 
-    const PdfComponent = await loadPdfReportComponent();
-    const pdfStream = await renderToStream(
-      React.createElement(PdfComponent, {
-        selectedPins: preparedPins,
-        categories: categories || [],
-        statuses: statuses || [],
-        fields: fields || {},
-        displayMode: displayMode || "list",
-        selectedProject: project,
-        config: templateConfig || null,
-        participants: participants || [],
-        customSections: customSections || [],
-      })
-    );
+  console.log("⏳ Step 4/4: Generating PDF report...");
+
+// ── Inject logo URLs from org/project into the template config ────────────
+const resolvedConfig = templateConfig ? JSON.parse(JSON.stringify(templateConfig)) : {}
+resolvedConfig.header = resolvedConfig.header || {}
+resolvedConfig.header.logoUrl       = project?.organizations?.logo_url       || ''
+resolvedConfig.header.clientLogoUrl = project?.client_logo_url               || ''
+
+const PdfComponent = await loadPdfReportComponent();
+const pdfStream = await renderToStream(
+  React.createElement(PdfComponent, {
+    selectedPins: preparedPins,
+    categories: categories || [],
+    statuses: statuses || [],
+    fields: fields || {},
+    displayMode: displayMode || "list",
+    selectedProject: project,
+    config: resolvedConfig,
+    participants: participants || [],
+    customSections: customSections || [],
+  })
+);
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="report-${projectId}-${Date.now()}.pdf"`);
