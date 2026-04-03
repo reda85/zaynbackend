@@ -1,6 +1,5 @@
 // src/pdf/PdfReportServer.jsx
 import React from 'react';
-import { pathToFileURL } from 'url'
 import fs from 'fs'
 import { Document, Page, Text, View, Image, Font } from "@react-pdf/renderer";
 import { createTw } from "react-pdf-tailwind";
@@ -8,32 +7,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const __dirname  = dirname(__filename);
 const projectRoot = path.join(__dirname, '../../');
 
-// Add this helper right after your existing __dirname / projectRoot setup:
-
-
-
-
-const fontsDir = path.resolve(projectRoot, 'fonts')
-
-// Read font as ArrayBuffer — what react-pdf actually expects internally
-const loadFontBuffer = (filename) => {
-  const fullPath = path.join(fontsDir, filename)
-  const buffer = fs.readFileSync(fullPath)
-  // Convert Node Buffer to ArrayBuffer
-  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
-}
-
-
-
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001'
-
 const fontUrl = (filename) => `${BACKEND_URL}/fonts/${filename}`
 
 const registerFont = (family, variants) => {
@@ -44,8 +22,6 @@ const registerFont = (family, variants) => {
     console.warn(`⚠️ Font ${family} failed:`, err.message)
   }
 }
-
-
 
 registerFont("Inter",           [{ src: fontUrl('Inter-Regular.woff'),           fontWeight: "normal" }, { src: fontUrl('Inter-Bold.woff'),           fontWeight: "bold" }])
 registerFont("Outfit",          [{ src: fontUrl('Outfit-Regular.woff'),          fontWeight: "normal" }, { src: fontUrl('Outfit-Bold.woff'),          fontWeight: "bold" }])
@@ -59,20 +35,22 @@ registerFont("PlayfairDisplay", [{ src: fontUrl('PlayfairDisplay-Regular.woff'),
 registerFont("DMSans",          [{ src: fontUrl('DMSans-Regular.woff'),          fontWeight: "normal" }, { src: fontUrl('DMSans-Bold.woff'),          fontWeight: "bold" }])
 
 const fontFamilyMap = {
-  helvetica:   "Helvetica",
-  times:       "Times-Roman",
-  courier:     "Courier",
-  inter:       "Inter",
-  outfit:      "Outfit",
-  roboto:      "Roboto",
-  lato:        "Lato",
-  montserrat:  "Montserrat",
-  poppins:     "Poppins",
-  raleway:     "Raleway",
-  opensans:    "OpenSans",
-  playfair:    "PlayfairDisplay",
-  dmsans:      "DMSans",
+  helvetica:  "Helvetica",
+  times:      "Times-Roman",
+  courier:    "Courier",
+  inter:      "Inter",
+  outfit:     "Outfit",
+  roboto:     "Roboto",
+  lato:       "Lato",
+  montserrat: "Montserrat",
+  poppins:    "Poppins",
+  raleway:    "Raleway",
+  opensans:   "OpenSans",
+  playfair:   "PlayfairDisplay",
+  dmsans:     "DMSans",
 }
+
+const DEFAULT_SECTION_ORDER = ['summary', 'participants', 'signatures', 'tasks', 'customSections']
 
 export const pdfIconsMap = {
   "grid":              path.join(projectRoot, "icons/grid-white.png"),
@@ -108,11 +86,7 @@ const ICONS = {
 const tw = createTw({
   theme: {
     fontFamily: { sans: ["Helvetica", "Arial", "sans-serif"] },
-    extend: {
-      colors: {
-        stone: { 50: "#f5f5f4", 100: "#e7e5e4", 700: "#44403c", 800: "#292524" },
-      },
-    },
+    extend: { colors: { stone: { 50: "#f5f5f4", 100: "#e7e5e4", 700: "#44403c", 800: "#292524" } } },
   },
 });
 
@@ -124,107 +98,147 @@ const groupBy = (arr, key) =>
     return acc;
   }, {});
 
+const chunkArray = (arr, n) => {
+  const rows = []
+  for (let i = 0; i < arr.length; i += n) rows.push(arr.slice(i, i + n))
+  return rows
+}
+
 const logoHeightMap = { small: 24, medium: 36, large: 52 };
 const HEADER_HEIGHT = 64;
+const FOOTER_HEIGHT = 32;
+
+// ── Section title style helper ────────────────────────────────────────────────
+const getSectionTitleStyle = (sectionTitles, primaryColor, fontFamily) => {
+  const st        = sectionTitles || {}
+  const sizeMap   = { small: 9, medium: 11, large: 14 }
+  const fontSize  = sizeMap[st.titleSize ?? 'medium']
+  const showBar   = st.titleAccentBar ?? true
+  const underline = st.titleUnderline ?? false
+  return {
+    containerStyle: showBar
+      ? { borderLeftWidth: 3, borderLeftColor: primaryColor, paddingLeft: 8, marginBottom: 12 }
+      : { marginBottom: 12 },
+    textStyle: {
+      fontSize,
+      fontWeight:     "bold",
+      color:          primaryColor,
+      textDecoration: underline ? "underline" : "none",
+      fontFamily,
+    },
+  }
+}
 
 const normalizeConfig = (config, displayMode) => {
   const base = config || {}
   return {
-    primaryColor: "#44403c",
-    fontFamily: "inter",
-    reportTitle: "RAPPORT DE TÂCHES",
+    primaryColor:  "#44403c",
+    fontFamily:    "inter",
+    reportTitle:   "RAPPORT DE TÂCHES",
+    sectionOrder:  DEFAULT_SECTION_ORDER,
     ...base,
+    sectionTitles: {
+      titleSize:      "medium",
+      titleAccentBar: true,
+      titleUnderline: false,
+      ...(base.sectionTitles || {}),
+    },
     header: {
       showOrganizationName: true,
-      showProjectName: true,
-      showDate: true,
-      showLogo: false,
-      logoUrl: '',
-      logoSize: 'medium',
-      showClientLogo: false,
-      clientLogoUrl: '',
-      clientLogoSize: 'medium',
-      layout: "horizontal",
+      showProjectName:      true,
+      showDate:             true,
+      showLogo:             false,
+      logoUrl:              '',
+      logoSize:             'medium',
+      showClientLogo:       false,
+      clientLogoUrl:        '',
+      clientLogoSize:       'medium',
+      layout:               "horizontal",
       ...(base.header || {}),
     },
     summary: {
-      enabled: true,
-      showPeriod: true,
-      showTotalCount: true,
-      showOverdueCount: true,
-      showPlanCount: true,
+      enabled:             true,
+      showPeriod:          true,
+      showTotalCount:      true,
+      showOverdueCount:    true,
+      showPlanCount:       true,
       showStatusBreakdown: true,
-      backgroundColor: "#f5f5f4",
+      backgroundColor:     "#f5f5f4",
       ...(base.summary || {}),
     },
     tasks: {
       displayMode,
-      groupBy: "none",
-      sortBy: "created_at",
+      groupBy:                "none",
+      sortBy:                 "created_at",
+      title:                  "Tâches",
+      photosPerRow:           3,
+      galleryShowName:        true,
+      galleryShowDescription: false,
+      galleryShowStatus:      true,
       ...(base.tasks || {}),
     },
     listView: {
-      showIndex: true,
-      showCategoryIcon: true,
-      showStatusPill: true,
-      snapshotSize: "large",
-      showDividers: true,
-      snapshotBorder: true,
+      showIndex:           true,
+      showCategoryIcon:    true,
+      showStatusPill:      true,
+      snapshotSize:        "large",
+      showDividers:        true,
+      snapshotBorder:      true,
       snapshotBorderWidth: 4,
       ...(base.listView || {}),
     },
     tableView: {
-      showIndex: true,
-      showPhotosInline: true,
-      photoSize: "medium",
-      compactMode: false,
-      alternateRowColors: true,
+      showIndex:             true,
+      showPhotosInline:      true,
+      photoSize:             "medium",
+      compactMode:           false,
+      alternateRowColors:    true,
       headerBackgroundColor: "#f5f5f4",
       ...(base.tableView || {}),
     },
     coverPage: {
-      enabled: false,
-      showCompanyLogo: false,
-      companyLogoSize: 'medium',
-      showClientLogo: false,
-      clientLogoSize: 'medium',
-      showProjectPhoto: false,
-      projectPhotoSize: 'medium',
-      showSummary: false,
-      titleStyle: 'bold',
-      titleSize: 'large',
-      titleAlign: 'left',
+      enabled:            false,
+      showCompanyLogo:    false,
+      companyLogoSize:    'medium',
+      showClientLogo:     false,
+      clientLogoSize:     'medium',
+      showProjectPhoto:   false,
+      projectPhotoSize:   'medium',
+      showSummary:        false,
+      titleStyle:         'bold',
+      titleSize:          'large',
+      titleAlign:         'left',
       titleLetterSpacing: 'normal',
-      titleColor: 'primary',
-      titleCustomColor: '#000000',
-      titleAccentBar: true,
+      titleColor:         'primary',
+      titleCustomColor:   '#000000',
+      titleAccentBar:     true,
       ...(base.coverPage || {}),
     },
     participants: {
-      enabled: false,
-      title: "Équipe projet",
-      layout: "grid",
-      showRoles: true,
+      enabled:     false,
+      title:       "Équipe projet",
+      layout:      "grid",
+      showRoles:   true,
       showContact: false,
       ...(base.participants || {}),
     },
     signatures: {
       enabled: false,
-      title: "Signatures",
-      layout: "horizontal",
-      fields: [],
+      title:   "Signatures",
+      layout:  "horizontal",
+      fields:  [],
       ...(base.signatures || {}),
     },
     footer: {
-      enabled: false,
+      enabled:         false,
       showPageNumbers: true,
       showProjectInfo: true,
       showCompanyInfo: false,
-      customText: "",
+      customText:      "",
       ...(base.footer || {}),
     },
     customSections: base.customSections || [],
-    fields: base.fields || {},
+    fields:         base.fields || {},
   }
 }
 
@@ -252,9 +266,7 @@ const TableCell = ({ children, header, width, align = "left", border = true, con
     alignItems: align === "center" ? "center" : "flex-start",
   }}>
     {typeof children === "string" ? (
-      <Text style={{ fontSize: header ? 10 : 9, fontWeight: header ? "bold" : "normal", color: header ? "#292524" : "#44403c", fontFamily }}>
-        {children}
-      </Text>
+      <Text style={{ fontSize: header ? 10 : 9, fontWeight: header ? "bold" : "normal", color: header ? "#292524" : "#44403c", fontFamily }}>{children}</Text>
     ) : children}
   </View>
 );
@@ -262,10 +274,9 @@ const TableCell = ({ children, header, width, align = "left", border = true, con
 // ── Table View ────────────────────────────────────────────────────────────────
 const TableView = ({ selectedPins, categories, statuses, fields, config, fontFamily }) => {
   const photoSizeMap = { small: { width: 80, height: 80 }, medium: { width: 120, height: 120 }, large: { width: 160, height: 160 } };
-  const photoSize = photoSizeMap[config?.tableView?.photoSize || 'medium'];
-
+  const photoSize    = photoSizeMap[config?.tableView?.photoSize || 'medium'];
   return (
-    <View style={{ marginTop: 24 }}>
+    <View style={{ marginTop: 8 }}>
       <View style={{ flexDirection: "row", borderTopWidth: 1, borderLeftWidth: 1, borderTopColor: "#d6d3d1", borderLeftColor: "#d6d3d1" }}>
         {config?.tableView?.showIndex && <TableCell config={config} fontFamily={fontFamily} header width="5%">#</TableCell>}
         <TableCell config={config} fontFamily={fontFamily} header width="30%">Tâche</TableCell>
@@ -276,13 +287,11 @@ const TableView = ({ selectedPins, categories, statuses, fields, config, fontFam
         {fields.dueDate    && <TableCell config={config} fontFamily={fontFamily} header width="12%">Échéance</TableCell>}
         {fields.snapshot   && <TableCell config={config} fontFamily={fontFamily} header width="11%" border={false}>Plan</TableCell>}
       </View>
-
       {selectedPins.map((pin, index) => {
         const category   = categories.find((c) => String(c.id) === String(pin.category_id));
         const status     = statuses.find((s) => s.id === pin.status_id);
         const firstPhoto = pin.pins_photos?.[0];
         const rowBg      = config?.tableView?.alternateRowColors && index % 2 !== 0 ? "#fafaf9" : "white";
-
         return (
           <View key={pin.id || index} style={{ flexDirection: "row", borderLeftWidth: 1, borderLeftColor: "#d6d3d1", backgroundColor: rowBg }} wrap={false}>
             {config?.tableView?.showIndex && <TableCell config={config} fontFamily={fontFamily} width="5%" align="center">{index + 1}</TableCell>}
@@ -314,26 +323,21 @@ const TableView = ({ selectedPins, categories, statuses, fields, config, fontFam
 // ── List View ─────────────────────────────────────────────────────────────────
 const ListView = ({ selectedPins, categories, statuses, fields, config, fontFamily }) => {
   const snapshotSizeMap = { small: { width: 100, height: 100 }, medium: { width: 120, height: 120 }, large: { width: 140, height: 140 } };
-  const snapshotSize = snapshotSizeMap[config?.listView?.snapshotSize || 'large'];
-  const primaryColor = config?.primaryColor || "#44403c";
-
+  const snapshotSize    = snapshotSizeMap[config?.listView?.snapshotSize || 'large'];
+  const primaryColor    = config?.primaryColor || "#44403c";
   return (
     <>
       {selectedPins.map((pin, index) => {
         const category = categories.find((c) => String(c.id) === String(pin.category_id));
         const status   = statuses.find((s) => s.id === pin.status_id);
-
         return (
           <View key={pin.id || index} wrap={false}>
-            <View style={{ flexDirection: "row", gap: 16, marginVertical: 12 }} break={index > 0}>
+            <View style={{ flexDirection: "row", gap: 16, marginVertical: 12 }}>
               <View style={{ width: "65%" }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-                  {config?.listView?.showIndex && (
-                    <Text style={{ fontSize: 12, fontWeight: "bold", color: primaryColor, fontFamily }}>{index + 1}.</Text>
-                  )}
+                  {config?.listView?.showIndex && <Text style={{ fontSize: 12, fontWeight: "bold", color: primaryColor, fontFamily }}>{index + 1}.</Text>}
                   <Text style={{ fontSize: 12, fontWeight: "bold", color: "#292524", fontFamily }}>{pin?.name || "Tâche sans nom"}</Text>
                 </View>
-
                 {(config?.listView?.showCategoryIcon || config?.listView?.showStatusPill) && (
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 }}>
                     {config?.listView?.showCategoryIcon && category && <PdfCategoryLabel category={category} status={status} />}
@@ -344,7 +348,6 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
                     )}
                   </View>
                 )}
-
                 <View style={{ marginTop: 8 }}>
                   <View style={{ flexDirection: "row", marginVertical: 2 }}>
                     <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>ID:</Text>
@@ -372,36 +375,24 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
                     <View style={{ flexDirection: "row", alignItems: "center", marginVertical: 2 }}>
                       <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Échéance:</Text>
                       <Image src={ICONS.calendar} style={{ width: 10, height: 10, marginRight: 3 }} />
-                      <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>
-                        {pin.due_date ? new Date(pin.due_date).toLocaleDateString("fr-FR") : "-"}
-                      </Text>
+                      <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{pin.due_date ? new Date(pin.due_date).toLocaleDateString("fr-FR") : "-"}</Text>
                     </View>
                   )}
                   {fields.description && (
                     <View style={{ flexDirection: "row", marginVertical: 2 }}>
                       <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Description:</Text>
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{pin.note || "-"}</Text>
-                      </View>
+                      <View style={{ flex: 1 }}><Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{pin.note || "-"}</Text></View>
                     </View>
                   )}
                 </View>
               </View>
-
               <View style={{ width: "35%", alignItems: "center", flexShrink: 0 }}>
                 {fields.snapshot && pin.snapshot && (
-                  <Image
-                    src={pin.snapshot}
-                    style={{
-                      width: snapshotSize.width,
-                      height: snapshotSize.height,
-                      objectFit: "cover",
-                      border: config?.listView?.snapshotBorder
-                        ? `${config.listView.snapshotBorderWidth || 3}pt solid ${primaryColor}`
-                        : "3pt solid black",
-                      borderRadius: 4,
-                    }}
-                  />
+                  <Image src={pin.snapshot} style={{
+                    width: snapshotSize.width, height: snapshotSize.height, objectFit: "cover",
+                    border: config?.listView?.snapshotBorder ? `${config.listView.snapshotBorderWidth || 3}pt solid ${primaryColor}` : "3pt solid black",
+                    borderRadius: 4,
+                  }} />
                 )}
                 {fields.snapshot && pin.pdf_name && (
                   <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 4, marginTop: 6, maxWidth: snapshotSize.width }}>
@@ -411,7 +402,6 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
                 )}
               </View>
             </View>
-
             {fields.photos && pin.pins_photos?.length > 0 && (
               <View style={{ marginTop: 8 }}>
                 <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", marginBottom: 6, fontFamily }}>Médias</Text>
@@ -419,15 +409,12 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
                   {pin.pins_photos.map((photo, i) => (
                     <View key={i} style={{ alignItems: "center" }}>
                       <Image src={photo.public_url} style={{ width: 110, height: 110, objectFit: "cover", borderRadius: 4 }} />
-                      {photo.description && (
-                        <Text style={{ fontSize: 7, color: "#78716c", marginTop: 3, textAlign: "center", maxWidth: 110, fontFamily }}>{photo.description}</Text>
-                      )}
+                      {photo.description && <Text style={{ fontSize: 7, color: "#78716c", marginTop: 3, textAlign: "center", maxWidth: 110, fontFamily }}>{photo.description}</Text>}
                     </View>
                   ))}
                 </View>
               </View>
             )}
-
             {config?.listView?.showDividers && index < selectedPins.length - 1 && (
               <View style={{ height: 1, backgroundColor: "#e7e5e4", marginVertical: 10, width: "100%" }} />
             )}
@@ -438,18 +425,81 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
   );
 };
 
-// ── Participants Section ───────────────────────────────────────────────────────
-const ParticipantsSection = ({ participants = [], config, primaryColor, fontFamily }) => {
-  const pc      = config?.participants || {};
-  const isGrid  = (pc.layout || 'grid') === 'grid';
-  const present = participants.filter((p) => p.present !== false);
-  const absent  = participants.filter((p) => p.present === false);
+// ── Photo Gallery View ────────────────────────────────────────────────────────
+const PhotoGalleryView = ({ selectedPins, statuses, config, fontFamily }) => {
+  const photosPerRow    = config?.tasks?.photosPerRow ?? 3
+  const showName        = config?.tasks?.galleryShowName ?? true
+  const showDescription = config?.tasks?.galleryShowDescription ?? false
+  const showStatus      = config?.tasks?.galleryShowStatus ?? true
+
+  // A4 content width: 595pt - 64pt padding = 531pt
+  const CONTENT_WIDTH = 531
+  const GAP           = 4
+  const colWidth      = (CONTENT_WIDTH - GAP * (photosPerRow - 1)) / photosPerRow
+
+  const pinsWithPhotos = selectedPins.filter(p => p.pins_photos?.length > 0)
+
+  if (!pinsWithPhotos.length) return (
+    <View style={{ marginTop: 8 }}>
+      <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>Aucune photo disponible.</Text>
+    </View>
+  )
+
+  // Collect ALL photos from all pins into a flat list with metadata
+  const allPhotos = pinsWithPhotos.flatMap(pin => {
+    const status = statuses.find(s => s.id === pin.status_id)
+    return (pin.pins_photos || []).map(photo => ({
+      photo,
+      pinName:  pin.name || "Tâche sans nom",
+      pinNote:  pin.note || "",
+      statusColor: status?.color || "#666",
+      statusName:  status?.name || "",
+    }))
+  })
+
+  const rows = chunkArray(allPhotos, photosPerRow)
 
   return (
-    <View style={{ marginTop: 24 }}>
-      <Text style={{ fontSize: 10, fontWeight: "bold", color: "#a8a29e", marginBottom: 12, letterSpacing: 1, fontFamily }}>
-        {(pc.title || "Équipe projet").toUpperCase()}
-      </Text>
+    <View style={{ marginTop: 8 }}>
+      {rows.map((row, rowIndex) => (
+        <View key={rowIndex} style={{ flexDirection: "row", gap: GAP, marginBottom: GAP }}>
+          {row.map((item, i) => (
+            <View key={i} style={{ width: colWidth }}>
+              <View style={{ position: "relative" }}>
+                <Image src={item.photo.public_url} style={{ width: colWidth, height: colWidth, objectFit: "cover", borderRadius: 4 }} />
+                {showStatus && item.statusName && (
+                  <View style={{ position: "absolute", top: 4, right: 4, backgroundColor: item.statusColor, borderRadius: 9999, paddingVertical: 2, paddingHorizontal: 6 }}>
+                    <Text style={{ fontSize: 6, color: "white", fontFamily }}>{item.statusName}</Text>
+                  </View>
+                )}
+              </View>
+              {showName && (
+                <Text style={{ fontSize: 7, fontWeight: "bold", color: "#292524", marginTop: 3, fontFamily }} numberOfLines={1}>{item.pinName}</Text>
+              )}
+              {item.photo.description && (
+                <Text style={{ fontSize: 6, color: "#78716c", marginTop: 1, fontFamily }}>{item.photo.description}</Text>
+              )}
+              {showDescription && item.pinNote && (
+                <Text style={{ fontSize: 6, color: "#a8a29e", marginTop: 1, fontFamily }}>{item.pinNote}</Text>
+              )}
+            </View>
+          ))}
+        </View>
+      ))}
+    </View>
+  )
+}
+
+// ── Participants Section content ───────────────────────────────────────────────
+const ParticipantsSectionContent = ({ participants = [], config, primaryColor, fontFamily, sectionTitles }) => {
+  const pc                            = config?.participants || {};
+  const isGrid                        = (pc.layout || 'grid') === 'grid';
+  const present                       = participants.filter((p) => p.present !== false);
+  const absent                        = participants.filter((p) => p.present === false);
+  const { containerStyle, textStyle } = getSectionTitleStyle(sectionTitles, primaryColor, fontFamily);
+  return (
+    <View style={{ marginTop: 16 }}>
+      <View style={containerStyle}><Text style={textStyle}>{pc.title || "Équipe projet"}</Text></View>
       <View style={isGrid ? { flexDirection: "row", flexWrap: "wrap", gap: 16 } : { gap: 8 }}>
         {present.map((member, i) => (
           <View key={member.id || i} style={{ width: isGrid ? "45%" : "100%", borderBottomWidth: 1, borderBottomColor: "#e7e5e4", paddingBottom: 10, paddingTop: 4 }}>
@@ -483,63 +533,47 @@ const ParticipantsSection = ({ participants = [], config, primaryColor, fontFami
 };
 
 // ── Custom Sections ───────────────────────────────────────────────────────────
-const CustomSectionsView = ({ customSections = [], primaryColor, fontFamily }) => {
+const CustomSectionsView = ({ customSections = [], primaryColor, fontFamily, sectionTitles }) => {
   const enabled = customSections.filter((s) => s.content?.trim());
   if (!enabled.length) return null;
-
+  const { containerStyle, textStyle } = getSectionTitleStyle(sectionTitles, primaryColor, fontFamily);
   return (
     <>
-      {enabled.map((section) => {
-        const titleSizeMap  = { small: 9, medium: 11, large: 14 };
-        const fontSize      = titleSizeMap[section.titleSize ?? 'medium'];
-        const showBar       = section.titleAccentBar ?? true;
-        const showUnderline = section.titleUnderline ?? false;
-
-        const titleContainerStyle = showBar
-          ? { borderLeftWidth: 3, borderLeftColor: primaryColor, paddingLeft: 8, marginBottom: 12 }
-          : { marginBottom: 12 };
-
-        return (
-          <View key={section.id} style={{ marginTop: 32 }} wrap={false}>
-            <View style={titleContainerStyle}>
-              <Text style={{ fontSize, fontWeight: "bold", color: primaryColor, textDecoration: showUnderline ? "underline" : "none", fontFamily }}>
-                {section.title}
-              </Text>
+      {enabled.map((section) => (
+        <View key={section.id} style={{ marginTop: 32 }} wrap={false}>
+          <View style={containerStyle}><Text style={textStyle}>{section.title}</Text></View>
+          {section.type === 'list' ? (
+            <View style={{ gap: 6 }}>
+              {section.content.split('\n').map((l) => l.trim()).filter(Boolean).map((line, i) => (
+                <View key={i} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+                  <View style={{ width: 4, height: 4, borderRadius: 9999, backgroundColor: primaryColor, marginTop: 4, flexShrink: 0 }} />
+                  <Text style={{ fontSize: 9, color: "#44403c", flex: 1, fontFamily }}>{line}</Text>
+                </View>
+              ))}
             </View>
-            {section.type === 'list' ? (
-              <View style={{ gap: 6 }}>
-                {section.content.split('\n').map((l) => l.trim()).filter(Boolean).map((line, i) => (
-                  <View key={i} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-                    <View style={{ width: 4, height: 4, borderRadius: 9999, backgroundColor: primaryColor, marginTop: 4, flexShrink: 0 }} />
-                    <Text style={{ fontSize: 9, color: "#44403c", flex: 1, fontFamily }}>{line}</Text>
-                  </View>
-                ))}
-              </View>
-            ) : (
-              <View style={{ backgroundColor: "#f5f5f4", padding: 12, borderRadius: 4 }}>
-                <Text style={{ fontSize: 9, color: "#44403c", lineHeight: 1.6, fontFamily }}>{section.content}</Text>
-              </View>
-            )}
-          </View>
-        );
-      })}
+          ) : (
+            <View style={{ backgroundColor: "#f5f5f4", padding: 12, borderRadius: 4 }}>
+              <Text style={{ fontSize: 9, color: "#44403c", lineHeight: 1.6, fontFamily }}>{section.content}</Text>
+            </View>
+          )}
+        </View>
+      ))}
     </>
   );
 };
 
-// ── Signatures ────────────────────────────────────────────────────────────────
-const SignaturesView = ({ config, primaryColor, fontFamily }) => {
+// ── Signatures content ────────────────────────────────────────────────────────
+const SignaturesContent = ({ config, primaryColor, fontFamily, sectionTitles }) => {
   const sc = config?.signatures;
   if (!sc?.enabled) return null;
-  const enabled = (sc.fields || []).filter((f) => f.enabled);
-  if (!enabled.length) return null;
+  const enabledFields = (sc.fields || []).filter((f) => f.enabled);
+  if (!enabledFields.length) return null;
+  const { containerStyle, textStyle } = getSectionTitleStyle(sectionTitles, primaryColor, fontFamily);
   return (
-    <View style={{ marginTop: 40 }} wrap={false}>
-      <Text style={{ fontSize: 10, fontWeight: "bold", color: "#a8a29e", marginBottom: 16, letterSpacing: 1, fontFamily }}>
-        {(sc.title || "Signatures").toUpperCase()}
-      </Text>
+    <View style={{ marginTop: 16 }}>
+      <View style={containerStyle}><Text style={textStyle}>{sc.title || "Signatures"}</Text></View>
       <View style={sc.layout !== 'vertical' ? { flexDirection: "row", gap: 24 } : { gap: 24 }}>
-        {enabled.map((field, i) => (
+        {enabledFields.map((field, i) => (
           <View key={i} style={{ flex: sc.layout !== 'vertical' ? 1 : undefined }}>
             <Text style={{ fontSize: 9, color: "#78716c", marginBottom: 8, fontFamily }}>{field.label}</Text>
             <View style={{ borderBottomWidth: 1, borderBottomColor: "#292524", height: 40, marginBottom: 4 }} />
@@ -553,82 +587,52 @@ const SignaturesView = ({ config, primaryColor, fontFamily }) => {
 
 // ── Cover Page Title ──────────────────────────────────────────────────────────
 const CoverTitle = ({ config, primaryColor, projectName, fontFamily }) => {
-  const cp = config?.coverPage || {};
+  const cp           = config?.coverPage || {};
   const titleStyle   = cp.titleStyle   || 'bold';
   const titleSize    = cp.titleSize    || 'large';
   const titleAlign   = cp.titleAlign   || 'left';
   const titleSpacing = cp.titleLetterSpacing || 'normal';
   const showBar      = cp.titleAccentBar ?? true;
-  const titleColor   = (cp.titleColor || 'primary') === 'custom'
-    ? (cp.titleCustomColor || '#000000')
-    : primaryColor;
-
-  const fontSizeMap = { small: 24, medium: 32, large: 42 };
-  const subSizeMap  = { small: 13, medium: 16, large: 20 };
-  const spacingMap  = { tight: -1, normal: 0, wide: 2 };
-
-  const fontSize  = fontSizeMap[titleSize];
-  const subSize   = subSizeMap[titleSize];
-  const spacing   = spacingMap[titleSpacing];
+  const titleColor   = (cp.titleColor || 'primary') === 'custom' ? (cp.titleCustomColor || '#000000') : primaryColor;
+  const fontSizeMap  = { small: 24, medium: 32, large: 42 };
+  const subSizeMap   = { small: 13, medium: 16, large: 20 };
+  const spacingMap   = { tight: -1, normal: 0, wide: 2 };
+  const fontSize     = fontSizeMap[titleSize];
+  const subSize      = subSizeMap[titleSize];
+  const spacing      = spacingMap[titleSpacing];
   const textAlignStyle  = titleAlign === 'center' ? "center" : titleAlign === 'right' ? "right" : "left";
   const itemsAlignStyle = titleAlign === 'center' ? "center" : titleAlign === 'right' ? "flex-end" : "flex-start";
-
   const barStyle = showBar
-    ? titleAlign === 'center'
-      ? { borderTopWidth: 4, borderTopColor: titleColor, paddingTop: 16 }
-      : titleAlign === 'right'
-        ? { borderRightWidth: 8, borderRightColor: titleColor, paddingRight: 16 }
-        : { borderLeftWidth: 8, borderLeftColor: titleColor, paddingLeft: 16 }
+    ? titleAlign === 'center' ? { borderTopWidth: 4, borderTopColor: titleColor, paddingTop: 16 }
+    : titleAlign === 'right'  ? { borderRightWidth: 8, borderRightColor: titleColor, paddingRight: 16 }
+    :                           { borderLeftWidth: 8, borderLeftColor: titleColor, paddingLeft: 16 }
     : {};
-
   const reportTitle = config.reportTitle || "RAPPORT DE TÂCHES";
-  const words     = reportTitle.split(' ');
-  const boldPart  = words.slice(0, 2).join(' ');
-  const lightPart = words.slice(2).join(' ') || "DE VISITE";
-
+  const words       = reportTitle.split(' ');
+  const boldPart    = words.slice(0, 2).join(' ');
+  const lightPart   = words.slice(2).join(' ') || "DE VISITE";
   return (
     <View style={{ ...barStyle, marginBottom: 40, alignItems: itemsAlignStyle }}>
-      {titleStyle === 'bold' && (
-        <>
-          <Text style={{ fontSize, fontWeight: "bold", color: titleColor, letterSpacing: spacing, textTransform: "uppercase", marginBottom: 10, textAlign: textAlignStyle, fontFamily }}>
-            {reportTitle}
-          </Text>
-          <Text style={{ fontSize: subSize, color: "#78716c", textAlign: textAlignStyle, fontFamily }}>
-            {projectName || "Projet"}
-          </Text>
-        </>
-      )}
-      {titleStyle === 'light' && (
-        <>
-          <Text style={{ fontSize: Math.round(fontSize * 0.9), fontWeight: "normal", color: titleColor, letterSpacing: spacing, marginBottom: 10, textAlign: textAlignStyle, fontFamily }}>
-            {reportTitle}
-          </Text>
-          <Text style={{ fontSize: subSize, color: "#78716c", textAlign: textAlignStyle, fontFamily }}>
-            {projectName || "Projet"}
-          </Text>
-        </>
-      )}
-      {titleStyle === 'boldlight' && (
-        <>
-          <Text style={{ fontSize, fontWeight: "bold", color: titleColor, letterSpacing: spacing, textTransform: "uppercase", marginBottom: 4, textAlign: textAlignStyle, fontFamily }}>
-            {boldPart}
-          </Text>
-          <Text style={{ fontSize: Math.round(fontSize * 0.6), fontWeight: "normal", color: titleColor, letterSpacing: spacing, marginBottom: 10, textAlign: textAlignStyle, opacity: 0.7, fontFamily }}>
-            {lightPart}
-          </Text>
-          <Text style={{ fontSize: subSize, color: "#78716c", textAlign: textAlignStyle, fontFamily }}>
-            {projectName || "Projet"}
-          </Text>
-        </>
-      )}
+      {titleStyle === 'bold' && (<>
+        <Text style={{ fontSize, fontWeight: "bold", color: titleColor, letterSpacing: spacing, textTransform: "uppercase", marginBottom: 10, textAlign: textAlignStyle, fontFamily }}>{reportTitle}</Text>
+        <Text style={{ fontSize: subSize, color: "#78716c", textAlign: textAlignStyle, fontFamily }}>{projectName || "Projet"}</Text>
+      </>)}
+      {titleStyle === 'light' && (<>
+        <Text style={{ fontSize: Math.round(fontSize * 0.9), fontWeight: "normal", color: titleColor, letterSpacing: spacing, marginBottom: 10, textAlign: textAlignStyle, fontFamily }}>{reportTitle}</Text>
+        <Text style={{ fontSize: subSize, color: "#78716c", textAlign: textAlignStyle, fontFamily }}>{projectName || "Projet"}</Text>
+      </>)}
+      {titleStyle === 'boldlight' && (<>
+        <Text style={{ fontSize, fontWeight: "bold", color: titleColor, letterSpacing: spacing, textTransform: "uppercase", marginBottom: 4, textAlign: textAlignStyle, fontFamily }}>{boldPart}</Text>
+        <Text style={{ fontSize: Math.round(fontSize * 0.6), fontWeight: "normal", color: titleColor, letterSpacing: spacing, marginBottom: 10, textAlign: textAlignStyle, opacity: 0.7, fontFamily }}>{lightPart}</Text>
+        <Text style={{ fontSize: subSize, color: "#78716c", textAlign: textAlignStyle, fontFamily }}>{projectName || "Projet"}</Text>
+      </>)}
     </View>
   );
 };
 
 // ── Cover Page ────────────────────────────────────────────────────────────────
-const CoverPage = ({ selectedProject, config, participants, fontFamily }) => {
+const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionTitles }) => {
   if (!config?.coverPage?.enabled) return null;
-
   const primaryColor    = config?.primaryColor || "#44403c";
   const logoSizeMap     = { small: { width: 80, height: 56 }, medium: { width: 112, height: 80 }, large: { width: 144, height: 96 } };
   const companyLogoSize = logoSizeMap[config.coverPage?.companyLogoSize || 'medium'];
@@ -636,26 +640,14 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily }) => {
   const companyLogoUrl  = config.header?.logoUrl       || config.coverPage?.companyLogoUrl || null;
   const clientLogoUrl   = config.header?.clientLogoUrl || config.coverPage?.clientLogoUrl  || null;
   const showParticipants = config.participants?.enabled && participants?.length > 0;
-
   return (
     <Page size="A4" style={{ backgroundColor: "white" }}>
       <View style={{ flex: 1, padding: 50, fontFamily }}>
-        {/* Logos */}
         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 48 }}>
-          {config.coverPage?.showCompanyLogo ? (
-            companyLogoUrl ? (
-              <Image src={companyLogoUrl} style={{ width: companyLogoSize.width, height: companyLogoSize.height, objectFit: "contain" }} />
-            ) : <View style={{ width: companyLogoSize.width, height: companyLogoSize.height }} />
-          ) : <View />}
-          {config.coverPage?.showClientLogo ? (
-            clientLogoUrl ? (
-              <Image src={clientLogoUrl} style={{ width: clientLogoSize.width, height: clientLogoSize.height, objectFit: "contain" }} />
-            ) : <View style={{ width: clientLogoSize.width, height: clientLogoSize.height }} />
-          ) : <View />}
+          {config.coverPage?.showCompanyLogo ? (companyLogoUrl ? <Image src={companyLogoUrl} style={{ width: companyLogoSize.width, height: companyLogoSize.height, objectFit: "contain" }} /> : <View style={{ width: companyLogoSize.width, height: companyLogoSize.height }} />) : <View />}
+          {config.coverPage?.showClientLogo  ? (clientLogoUrl  ? <Image src={clientLogoUrl}  style={{ width: clientLogoSize.width,  height: clientLogoSize.height,  objectFit: "contain" }} /> : <View style={{ width: clientLogoSize.width,  height: clientLogoSize.height  }} />) : <View />}
         </View>
-
         <CoverTitle config={config} primaryColor={primaryColor} projectName={selectedProject?.name} fontFamily={fontFamily} />
-
         {config.coverPage?.showProjectPhoto && (
           <View style={{ alignItems: "center", marginBottom: 32 }}>
             <View style={{
@@ -667,20 +659,15 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily }) => {
             </View>
           </View>
         )}
-
         {config.coverPage?.showSummary && (
           <View style={{ backgroundColor: "#f5f5f4", padding: 20, borderRadius: 8, borderLeftWidth: 4, borderLeftColor: primaryColor, marginBottom: 24 }}>
             <Text style={{ fontSize: 9, fontWeight: "bold", color: primaryColor, marginBottom: 6, fontFamily }}>RÉSUMÉ EXÉCUTIF</Text>
-            <Text style={{ fontSize: 11, color: "#44403c", fontFamily }}>
-              "Le projet progresse conformément au planning."
-            </Text>
+            <Text style={{ fontSize: 11, color: "#44403c", fontFamily }}>"Le projet progresse conformément au planning."</Text>
           </View>
         )}
-
         {showParticipants && (
-          <ParticipantsSection participants={participants} config={config} primaryColor={primaryColor} fontFamily={fontFamily} />
+          <ParticipantsSectionContent participants={participants} config={config} primaryColor={primaryColor} fontFamily={fontFamily} sectionTitles={sectionTitles} />
         )}
-
         <View style={{ marginTop: "auto", paddingTop: 20, borderTopWidth: 1, borderTopColor: "#e7e5e4", flexDirection: "row", justifyContent: "space-between" }}>
           <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>{selectedProject?.organizations?.name || "Organisation"}</Text>
           <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>{new Date().toLocaleDateString("fr-FR")}</Text>
@@ -689,6 +676,37 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily }) => {
     </Page>
   );
 };
+
+// ── Fixed header component (used on every content page) ───────────────────────
+const PageHeader = ({ templateConfig, selectedProject, primaryColor, fontFamily, hasLogo, hasClientLogo, logoH, clientLogoH }) => (
+  <View fixed style={{ position: "absolute", top: 0, left: 0, right: 0, height: HEADER_HEIGHT, paddingHorizontal: 32, paddingVertical: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", borderBottomWidth: 1, borderBottomColor: "#e7e5e4" }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+      {hasLogo && <Image src={templateConfig.header.logoUrl} style={{ height: logoH, objectFit: "contain" }} />}
+      <View>
+        {templateConfig.header?.showOrganizationName && <Text style={{ fontSize: 11, fontWeight: "bold", color: primaryColor, fontFamily }}>{selectedProject?.organizations?.name || "Organisation"}</Text>}
+        {templateConfig.header?.showProjectName      && <Text style={{ fontSize: 9, color: "#292524", marginTop: 2, fontFamily }}>{selectedProject?.name || "Projet"}</Text>}
+      </View>
+    </View>
+    <View style={{ alignItems: "flex-end", gap: 4 }}>
+      {hasClientLogo && <Image src={templateConfig.header.clientLogoUrl} style={{ height: clientLogoH, objectFit: "contain" }} />}
+      {templateConfig.header?.showDate && <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{new Date().toLocaleDateString("fr-FR")}</Text>}
+    </View>
+  </View>
+)
+
+// ── Fixed footer component (used on every content page) ───────────────────────
+const PageFooter = ({ templateConfig, selectedProject, fontFamily }) => (
+  <View fixed style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: FOOTER_HEIGHT, paddingHorizontal: 32, paddingVertical: 8, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderTopWidth: 1, borderTopColor: "#e7e5e4", backgroundColor: "white" }}>
+    <View style={{ flexDirection: "row", gap: 16 }}>
+      {templateConfig.footer?.showProjectInfo && <Text style={{ fontSize: 8, color: "#78716c", fontFamily }}>{selectedProject?.name || "Projet"}</Text>}
+      {templateConfig.footer?.showCompanyInfo && <Text style={{ fontSize: 8, color: "#78716c", fontFamily }}>{selectedProject?.organizations?.name || "Organisation"}</Text>}
+      {templateConfig.footer?.customText      && <Text style={{ fontSize: 8, color: "#78716c", fontFamily }}>{templateConfig.footer.customText}</Text>}
+    </View>
+    {templateConfig.footer?.showPageNumbers && (
+      <Text style={{ fontSize: 8, color: "#78716c", fontFamily }} render={({ pageNumber, totalPages }) => `${pageNumber} / ${totalPages}`} />
+    )}
+  </View>
+)
 
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function PdfReportServer({
@@ -705,18 +723,19 @@ export default function PdfReportServer({
   const templateConfig    = normalizeConfig(config, displayMode);
   const primaryColor      = templateConfig.primaryColor || "#44403c";
   const fontFamily        = fontFamilyMap[templateConfig.fontFamily] || "Helvetica";
+  const sectionTitles     = templateConfig.sectionTitles || {};
+  const sectionOrder      = templateConfig.sectionOrder || DEFAULT_SECTION_ORDER;
   const pinsByStatus      = groupBy(selectedPins, "status_id");
   const actualDisplayMode = templateConfig.tasks?.displayMode || displayMode;
-
-  const showParticipantsOnMain =
-    templateConfig.participants?.enabled === true &&
-    participants.length > 0 &&
-    !templateConfig.coverPage?.enabled;
+  const tasksTitle        = templateConfig.tasks?.title;
+  const showFooter        = templateConfig.footer?.enabled;
 
   const logoH       = logoHeightMap[templateConfig.header?.logoSize       || 'medium'];
   const clientLogoH = logoHeightMap[templateConfig.header?.clientLogoSize || 'medium'];
-  const hasLogo       = templateConfig.header?.showLogo       && !!templateConfig.header?.logoUrl;
-  const hasClientLogo = templateConfig.header?.showClientLogo && !!templateConfig.header?.clientLogoUrl;
+
+  // ── Logo: show if toggle enabled AND url exists ───────────────────────────
+  const hasLogo       = !!(templateConfig.header?.showLogo       && templateConfig.header?.logoUrl);
+  const hasClientLogo = !!(templateConfig.header?.showClientLogo && templateConfig.header?.clientLogoUrl);
 
   const showHeader =
     templateConfig.header?.showOrganizationName ||
@@ -724,101 +743,41 @@ export default function PdfReportServer({
     templateConfig.header?.showDate             ||
     hasLogo || hasClientLogo;
 
-  return (
-    <Document>
-      <CoverPage selectedProject={selectedProject} config={templateConfig} participants={participants} fontFamily={fontFamily} />
+  const paddingTop    = showHeader ? HEADER_HEIGHT + 16 : 32;
+  const paddingBottom = showFooter ? FOOTER_HEIGHT + 16 : 32;
 
-      <Page
-        size="A4"
-        style={{
-          paddingHorizontal: 32,
-          paddingBottom: 32,
-          paddingTop: showHeader ? HEADER_HEIGHT + 16 : 32,
-          backgroundColor: "white",
-          fontFamily,
-        }}
-        wrap
-      >
-        {/* ── HEADER ── */}
-        {showHeader && (
-          <View fixed style={{
-            position: "absolute", top: 0, left: 0, right: 0,
-            height: HEADER_HEIGHT,
-            paddingHorizontal: 32, paddingVertical: 12,
-            flexDirection: "row", justifyContent: "space-between", alignItems: "center",
-            backgroundColor: "white", borderBottomWidth: 1, borderBottomColor: "#e7e5e4",
-          }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-              {hasLogo && <Image src={templateConfig.header.logoUrl} style={{ height: logoH, objectFit: "contain" }} />}
-              <View>
-                {templateConfig.header?.showOrganizationName && (
-                  <Text style={{ fontSize: 11, fontWeight: "bold", color: primaryColor, fontFamily }}>
-                    {selectedProject?.organizations?.name || "Organisation"}
-                  </Text>
-                )}
-                {templateConfig.header?.showProjectName && (
-                  <Text style={{ fontSize: 9, color: "#292524", marginTop: 2, fontFamily }}>
-                    {selectedProject?.name || "Projet"}
-                  </Text>
-                )}
-              </View>
-            </View>
-            <View style={{ alignItems: "flex-end", gap: 4 }}>
-              {hasClientLogo && <Image src={templateConfig.header.clientLogoUrl} style={{ height: clientLogoH, objectFit: "contain" }} />}
-              {templateConfig.header?.showDate && (
-                <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>
-                  {new Date().toLocaleDateString("fr-FR")}
-                </Text>
-              )}
-            </View>
-          </View>
-        )}
+  const pageStyle = { paddingHorizontal: 32, paddingBottom, paddingTop, backgroundColor: "white", fontFamily };
 
-        {/* ── SUMMARY ── */}
-        {templateConfig.summary?.enabled && (
-          <View style={{ padding: 16, borderRadius: 8, marginBottom: 24, backgroundColor: templateConfig.summary.backgroundColor || "#f5f5f4" }}>
-            <Text style={{ fontSize: 12, fontWeight: "bold", color: primaryColor, marginBottom: 12, fontFamily }}>
-              {templateConfig.reportTitle}
-            </Text>
+  const headerProps = { templateConfig, selectedProject, primaryColor, fontFamily, hasLogo, hasClientLogo, logoH, clientLogoH };
+
+  // ── These section ids each get their own dedicated Page ───────────────────
+  const OWN_PAGE_SECTIONS = new Set(['participants', 'signatures'])
+
+  // ── Inline section renderer (renders View content, not a Page) ────────────
+  const renderInlineSection = (sectionId) => {
+    switch (sectionId) {
+
+      case 'summary':
+        if (!templateConfig.summary?.enabled) return null;
+        return (
+          <View key="summary" style={{ padding: 16, borderRadius: 8, marginBottom: 8, backgroundColor: templateConfig.summary.backgroundColor || "#f5f5f4" }}>
+            <Text style={{ fontSize: 12, fontWeight: "bold", color: primaryColor, marginBottom: 12, fontFamily }}>{templateConfig.reportTitle}</Text>
             <View style={{ flexDirection: "row" }}>
               {templateConfig.summary?.showPeriod && (
                 <View style={{ width: "50%" }}>
                   <Text style={{ fontSize: 8, fontWeight: "bold", color: "#44403c", marginBottom: 4, fontFamily }}>Période</Text>
                   <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>
-                    {selectedPins.length > 0
-                      ? (() => {
-                          const dates    = selectedPins.map((p) => new Date(p.created_at));
-                          const earliest = new Date(Math.min(...dates));
-                          const latest   = new Date(Math.max(...dates));
-                          return `${earliest.toLocaleDateString("fr-FR")} - ${latest.toLocaleDateString("fr-FR")}`;
-                        })()
-                      : "-"}
+                    {selectedPins.length > 0 ? (() => {
+                      const dates = selectedPins.map((p) => new Date(p.created_at));
+                      return `${new Date(Math.min(...dates)).toLocaleDateString("fr-FR")} - ${new Date(Math.max(...dates)).toLocaleDateString("fr-FR")}`;
+                    })() : "-"}
                   </Text>
                 </View>
               )}
               <View style={{ flexDirection: "row", width: "50%" }}>
-                {templateConfig.summary?.showTotalCount && (
-                  <View style={{ width: "33%" }}>
-                    <Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }}>Total</Text>
-                    <Text style={{ fontSize: 11, fontWeight: "bold", marginTop: 4, fontFamily }}>{selectedPins.length}</Text>
-                  </View>
-                )}
-                {templateConfig.summary?.showOverdueCount && (
-                  <View style={{ width: "33%", paddingHorizontal: 4 }}>
-                    <Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }}>En retard</Text>
-                    <Text style={{ fontSize: 11, fontWeight: "bold", marginTop: 4, fontFamily }}>
-                      {selectedPins.filter((p) => p.due_date && new Date(p.due_date) < new Date()).length}
-                    </Text>
-                  </View>
-                )}
-                {templateConfig.summary?.showPlanCount && (
-                  <View style={{ width: "33%", paddingHorizontal: 4 }}>
-                    <Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }}>Plans</Text>
-                    <Text style={{ fontSize: 11, fontWeight: "bold", marginTop: 4, fontFamily }}>
-                      {Object.keys(groupBy(selectedPins, "pdf_name")).length}
-                    </Text>
-                  </View>
-                )}
+                {templateConfig.summary?.showTotalCount   && <View style={{ width: "33%" }}><Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }}>Total</Text><Text style={{ fontSize: 11, fontWeight: "bold", marginTop: 4, fontFamily }}>{selectedPins.length}</Text></View>}
+                {templateConfig.summary?.showOverdueCount && <View style={{ width: "33%", paddingHorizontal: 4 }}><Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }}>En retard</Text><Text style={{ fontSize: 11, fontWeight: "bold", marginTop: 4, fontFamily }}>{selectedPins.filter((p) => p.due_date && new Date(p.due_date) < new Date()).length}</Text></View>}
+                {templateConfig.summary?.showPlanCount    && <View style={{ width: "33%", paddingHorizontal: 4 }}><Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }}>Plans</Text><Text style={{ fontSize: 11, fontWeight: "bold", marginTop: 4, fontFamily }}>{Object.keys(groupBy(selectedPins, "pdf_name")).length}</Text></View>}
               </View>
             </View>
             {templateConfig.summary?.showStatusBreakdown && (
@@ -827,10 +786,9 @@ export default function PdfReportServer({
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
                   {Object.keys(pinsByStatus).map((statusId) => {
                     const status = statuses.find((s) => String(s.id) === String(statusId));
-                    const count  = pinsByStatus[statusId].length;
                     return (
                       <View key={statusId} style={{ backgroundColor: status?.color || "#666", borderRadius: 9999, paddingVertical: 3, paddingHorizontal: 10 }}>
-                        <Text style={{ fontSize: 8, color: "white", fontFamily }}>{status?.name || "Inconnu"} ({count})</Text>
+                        <Text style={{ fontSize: 8, color: "white", fontFamily }}>{status?.name || "Inconnu"} ({pinsByStatus[statusId].length})</Text>
                       </View>
                     );
                   })}
@@ -838,34 +796,106 @@ export default function PdfReportServer({
               </View>
             )}
           </View>
-        )}
+        );
 
-        {showParticipantsOnMain && (
-          <ParticipantsSection participants={participants} config={templateConfig} primaryColor={primaryColor} fontFamily={fontFamily} />
-        )}
-
-        {actualDisplayMode === "table" ? (
-          <TableView selectedPins={selectedPins} categories={categories} statuses={statuses} fields={fields} config={templateConfig} fontFamily={fontFamily} />
-        ) : (
-          <ListView selectedPins={selectedPins} categories={categories} statuses={statuses} fields={fields} config={templateConfig} fontFamily={fontFamily} />
-        )}
-
-        <CustomSectionsView customSections={customSections} primaryColor={primaryColor} fontFamily={fontFamily} />
-        <SignaturesView config={templateConfig} primaryColor={primaryColor} fontFamily={fontFamily} />
-
-        {templateConfig.footer?.enabled && (
-          <View style={{ marginTop: 40, paddingTop: 16, borderTopWidth: 1, borderTopColor: "#e7e5e4", flexDirection: "row", justifyContent: "space-between" }}>
-            <View style={{ flexDirection: "row", gap: 16 }}>
-              {templateConfig.footer?.showProjectInfo  && <Text style={{ fontSize: 9, color: "#78716c", fontFamily }}>{selectedProject?.name || "Projet"}</Text>}
-              {templateConfig.footer?.showCompanyInfo  && <Text style={{ fontSize: 9, color: "#78716c", fontFamily }}>{selectedProject?.organizations?.name || "Organisation"}</Text>}
-              {templateConfig.footer?.customText       && <Text style={{ fontSize: 9, color: "#78716c", fontFamily }}>{templateConfig.footer.customText}</Text>}
-            </View>
-            {templateConfig.footer?.showPageNumbers && (
-              <Text style={{ fontSize: 9, color: "#78716c", fontFamily }}>Page 1</Text>
+      case 'tasks': {
+        const { containerStyle, textStyle } = getSectionTitleStyle(sectionTitles, primaryColor, fontFamily);
+        return (
+          <View key="tasks">
+            {tasksTitle && (
+              <View style={{ ...containerStyle, marginTop: 8 }}>
+                <Text style={textStyle}>{tasksTitle}</Text>
+              </View>
+            )}
+            {actualDisplayMode === "photoGallery" ? (
+              <PhotoGalleryView selectedPins={selectedPins} statuses={statuses} config={templateConfig} fontFamily={fontFamily} primaryColor={primaryColor} />
+            ) : actualDisplayMode === "table" ? (
+              <TableView selectedPins={selectedPins} categories={categories} statuses={statuses} fields={fields} config={templateConfig} fontFamily={fontFamily} />
+            ) : (
+              <ListView selectedPins={selectedPins} categories={categories} statuses={statuses} fields={fields} config={templateConfig} fontFamily={fontFamily} />
             )}
           </View>
-        )}
-      </Page>
+        );
+      }
+
+      case 'customSections':
+        return <CustomSectionsView key="customSections" customSections={customSections} primaryColor={primaryColor} fontFamily={fontFamily} sectionTitles={sectionTitles} />;
+
+      default:
+        return null;
+    }
+  }
+
+  // ── Own-page section renderer ─────────────────────────────────────────────
+  const renderOwnPageSection = (sectionId) => {
+    if (sectionId === 'participants') {
+      if (!templateConfig.participants?.enabled || participants.length === 0) return null;
+      return (
+        <Page key="participants-page" size="A4" style={pageStyle} wrap>
+          {showHeader && <PageHeader {...headerProps} />}
+          {showFooter && <PageFooter templateConfig={templateConfig} selectedProject={selectedProject} fontFamily={fontFamily} />}
+          <ParticipantsSectionContent participants={participants} config={templateConfig} primaryColor={primaryColor} fontFamily={fontFamily} sectionTitles={sectionTitles} />
+        </Page>
+      );
+    }
+
+    if (sectionId === 'signatures') {
+      const sc           = templateConfig.signatures;
+      const enabledFields = (sc?.fields || []).filter(f => f.enabled);
+      if (!sc?.enabled || !enabledFields.length) return null;
+      return (
+        <Page key="signatures-page" size="A4" style={pageStyle} wrap>
+          {showHeader && <PageHeader {...headerProps} />}
+          {showFooter && <PageFooter templateConfig={templateConfig} selectedProject={selectedProject} fontFamily={fontFamily} />}
+          <SignaturesContent config={templateConfig} primaryColor={primaryColor} fontFamily={fontFamily} sectionTitles={sectionTitles} />
+        </Page>
+      );
+    }
+
+    return null;
+  }
+
+  // ── Build document output respecting sectionOrder ─────────────────────────
+  // Strategy:
+  // - Collect consecutive inline sections into ONE main Page
+  // - Each own-page section becomes its own <Page>
+  // - Order is strictly sectionOrder
+  //
+  // We group the sectionOrder into "runs":
+  //   run = { type: 'inline', ids: [...] } | { type: 'page', id }
+  // Then render each run in order.
+
+  const runs = []
+  let currentInlineRun = null
+
+  for (const id of sectionOrder) {
+    if (OWN_PAGE_SECTIONS.has(id)) {
+      if (currentInlineRun) { runs.push(currentInlineRun); currentInlineRun = null }
+      runs.push({ type: 'page', id })
+    } else {
+      if (!currentInlineRun) currentInlineRun = { type: 'inline', ids: [] }
+      currentInlineRun.ids.push(id)
+    }
+  }
+  if (currentInlineRun) runs.push(currentInlineRun)
+
+  return (
+    <Document>
+      <CoverPage selectedProject={selectedProject} config={templateConfig} participants={participants} fontFamily={fontFamily} sectionTitles={sectionTitles} />
+
+      {runs.map((run, runIndex) => {
+        if (run.type === 'page') {
+          return renderOwnPageSection(run.id)
+        }
+        // inline run → single Page containing all inline sections in order
+        return (
+          <Page key={`inline-${runIndex}`} size="A4" style={pageStyle} wrap>
+            {showHeader && <PageHeader {...headerProps} />}
+            {showFooter && <PageFooter templateConfig={templateConfig} selectedProject={selectedProject} fontFamily={fontFamily} />}
+            {run.ids.map(id => renderInlineSection(id))}
+          </Page>
+        )
+      })}
     </Document>
   );
 }
