@@ -435,6 +435,8 @@ const PhotoGalleryView = ({ selectedPins, statuses, config, fontFamily }) => {
   // A4 content width: 595pt - 64pt padding = 531pt
   const CONTENT_WIDTH = 531
   const GAP           = 4
+  // FIX: increased row gap so rows breathe and don't feel cramped
+  const ROW_GAP       = 12
   const colWidth      = (CONTENT_WIDTH - GAP * (photosPerRow - 1)) / photosPerRow
 
   const pinsWithPhotos = selectedPins.filter(p => p.pins_photos?.length > 0)
@@ -450,8 +452,8 @@ const PhotoGalleryView = ({ selectedPins, statuses, config, fontFamily }) => {
     const status = statuses.find(s => s.id === pin.status_id)
     return (pin.pins_photos || []).map(photo => ({
       photo,
-      pinName:  pin.name || "Tâche sans nom",
-      pinNote:  pin.note || "",
+      pinName:     pin.name || "Tâche sans nom",
+      pinNote:     pin.note || "",
       statusColor: status?.color || "#666",
       statusName:  status?.name || "",
     }))
@@ -462,28 +464,29 @@ const PhotoGalleryView = ({ selectedPins, statuses, config, fontFamily }) => {
   return (
     <View style={{ marginTop: 8 }}>
       {rows.map((row, rowIndex) => (
-        <View key={rowIndex} style={{ flexDirection: "row", gap: GAP, marginBottom: GAP }}>
+        // FIX: wrap={false} prevents a row from being split across two pages
+        // FIX: marginBottom uses ROW_GAP (12pt) instead of GAP (4pt)
+        <View key={rowIndex} wrap={false} style={{ flexDirection: "row", gap: GAP, marginBottom: ROW_GAP }}>
           {row.map((item, i) => (
-            // In PhotoGalleryView, replace the caption block inside the row map:
-<View key={i} style={{ width: colWidth }}>
-  <View style={{ position: "relative" }}>
-    <Image src={item.photo.public_url} style={{ width: colWidth, height: colWidth, objectFit: "cover", borderRadius: 4 }} />
-    {showStatus && item.statusName && (
-      <View style={{ position: "absolute", top: 4, right: 4, backgroundColor: item.statusColor, borderRadius: 9999, paddingVertical: 2, paddingHorizontal: 6 }}>
-        <Text style={{ fontSize: 6, color: "white", fontFamily }}>{item.statusName}</Text>
-      </View>
-    )}
-  </View>
-  {showName && (
-    <Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", marginTop: 4, fontFamily, textAlign: "center" }} numberOfLines={1}>{item.pinName}</Text>
-  )}
-  {item.photo.description && (
-    <Text style={{ fontSize: 9, color: "#1d1d1f", marginTop: 2, fontFamily, textAlign: "center" }}>{item.photo.description}</Text>
-  )}
-  {showDescription && item.pinNote && (
-    <Text style={{ fontSize: 7, color: "#a8a29e", marginTop: 1, fontFamily, textAlign: "center" }}>{item.pinNote}</Text>
-  )}
-</View>
+            <View key={i} style={{ width: colWidth }}>
+              <View style={{ position: "relative" }}>
+                <Image src={item.photo.public_url} style={{ width: colWidth, height: colWidth, objectFit: "cover", borderRadius: 4 }} />
+                {showStatus && item.statusName && (
+                  <View style={{ position: "absolute", top: 4, right: 4, backgroundColor: item.statusColor, borderRadius: 9999, paddingVertical: 2, paddingHorizontal: 6 }}>
+                    <Text style={{ fontSize: 6, color: "white", fontFamily }}>{item.statusName}</Text>
+                  </View>
+                )}
+              </View>
+              {showName && (
+                <Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", marginTop: 4, fontFamily, textAlign: "center" }} numberOfLines={1}>{item.pinName}</Text>
+              )}
+              {item.photo.description && (
+                <Text style={{ fontSize: 9, color: "#1d1d1f", marginTop: 2, fontFamily, textAlign: "center" }}>{item.photo.description}</Text>
+              )}
+              {showDescription && item.pinNote && (
+                <Text style={{ fontSize: 7, color: "#a8a29e", marginTop: 1, fontFamily, textAlign: "center" }}>{item.pinNote}</Text>
+              )}
+            </View>
           ))}
         </View>
       ))}
@@ -886,12 +889,15 @@ export default function PdfReportServer({
         if (run.type === 'page') {
           return renderOwnPageSection(run.id)
         }
-        // inline run → single Page containing all inline sections in order
+        // FIX: pre-render inline sections and skip the Page entirely if all sections are null/disabled
+        // This prevents blank pages when all sections in a run are toggled off (e.g. summary disabled)
+        const renderedSections = run.ids.map(id => renderInlineSection(id)).filter(Boolean)
+        if (!renderedSections.length) return null
         return (
           <Page key={`inline-${runIndex}`} size="A4" style={pageStyle} wrap>
             {showHeader && <PageHeader {...headerProps} />}
             {showFooter && <PageFooter templateConfig={templateConfig} selectedProject={selectedProject} fontFamily={fontFamily} />}
-            {run.ids.map(id => renderInlineSection(id))}
+            {renderedSections}
           </Page>
         )
       })}
