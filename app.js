@@ -431,7 +431,7 @@ app.post("/api/report", async (req, res) => {
     const [pinsResult, categoriesResult, statusesResult, projectResult] = await Promise.all([
       supabase
         .from("pdf_pins")
-        .select(`*, categories(*), Status(*), assigned_to(*), created_by(*), projects(*), pins_photos(*), plans(file_url)`)
+        .select(`*, categories(*), Status(*), assigned_to(*), created_by(*), projects(*), pins_photos(*), plans(file_url), comments(*, username, created_at)`)
         .eq("project_id", projectId)
         .in("id", ids),
       supabase.from("categories").select("*"),
