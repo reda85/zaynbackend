@@ -462,7 +462,6 @@ const PhotoGalleryView = ({ selectedPins, statuses, config, fontFamily }) => {
   // A4 content width: 595pt - 64pt padding = 531pt
   const CONTENT_WIDTH = 531
   const GAP           = 4
-  // FIX: increased row gap so rows breathe and don't feel cramped
   const ROW_GAP       = 12
   const colWidth      = (CONTENT_WIDTH - GAP * (photosPerRow - 1)) / photosPerRow
 
