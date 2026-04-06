@@ -426,7 +426,7 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
                 <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", marginBottom: 6, fontFamily }}>Commentaires</Text>
                 <View style={{ gap: 6 }}>
                   {comments.map((comment, ci) => (
-                    <View key={ci} style={{ backgroundColor: "#f5f5f4", borderRadius: 6, padding: 8, borderLeftWidth: 2, borderLeftColor: primaryColor }}>
+                    <View key={ci} style={{ backgroundColor: "#f5f5f4", borderRadius: 6, padding: 8  }}>
                       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
                         <Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }}>
                           {comment.username || comment.created_by?.name || "Utilisateur"}
@@ -435,7 +435,7 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
                           {comment.created_at ? new Date(comment.created_at).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
                         </Text>
                       </View>
-                      <Text style={{ fontSize: 8, color: "#44403c", fontFamily, lineHeight: 1.5 }}>{comment.content || comment.text || comment.message || ""}</Text>
+                      <Text style={{ fontSize: 8, color: "#44403c", fontFamily, lineHeight: 1.5 }}>{comment.comment || ""}</Text>
                     </View>
                   ))}
                 </View>
