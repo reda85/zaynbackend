@@ -407,6 +407,59 @@ async function cropZoomRobust(pdfImg, xNorm, yNorm, size = 800) {
 }
 
 // ========================================================================================
+// FULL PLAN SNAPSHOT — whole plan with all pins labeled
+// ========================================================================================
+
+async function renderFullPlanSnapshot(pdfImg, pins) {
+  const { canvas, width, height } = pdfImg;
+
+  const out = createCanvas(width, height);
+  const ctx = out.getContext("2d");
+
+  // Draw the full plan at native resolution
+  ctx.drawImage(canvas, 0, 0);
+
+  const PIN_RADIUS = Math.max(14, width * 0.014);
+  const FONT_SIZE  = Math.max(10, PIN_RADIUS * 0.75);
+  const BORDER     = Math.max(3,  PIN_RADIUS * 0.3);
+
+  pins.forEach((pin) => {
+    if (pin.x === undefined || pin.y === undefined) return;
+
+    const cx = pin.x * width;
+    const cy = pin.y * height;
+    const label = String(pin._reportIndex + 1);
+
+    // Shadow for readability on any background
+    ctx.shadowColor = "rgba(0,0,0,0.4)";
+    ctx.shadowBlur = PIN_RADIUS * 0.8;
+
+    // White ring
+    ctx.beginPath();
+    ctx.arc(cx, cy, PIN_RADIUS + BORDER, 0, Math.PI * 2);
+    ctx.fillStyle = "white";
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+
+    // Red fill
+    ctx.beginPath();
+    ctx.arc(cx, cy, PIN_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = "#E53E3E";
+    ctx.fill();
+
+    // Number
+    ctx.font = `bold ${FONT_SIZE}px Arial`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "white";
+    ctx.fillText(label, cx, cy);
+  });
+
+  const buffer = out.toBuffer("image/png", { compressionLevel: 3 });
+  return "data:image/png;base64," + buffer.toString("base64");
+}
+// ========================================================================================
 // REPORT ENDPOINTS
 // ========================================================================================
 
@@ -508,29 +561,63 @@ app.post("/api/report", async (req, res) => {
       })
     );
 
-    console.log(`✅ Snapshots: ${preparedPins.filter((p) => p.snapshot).length}/${pins.length}\n`);
-    console.log("⏳ Step 4/4: Generating PDF report...");
+   console.log(`✅ Snapshots: ${preparedPins.filter((p) => p.snapshot).length}/${pins.length}\n`);
+console.log("⏳ Step 3b/4: Building full-plan overview snapshots...");
 
-  console.log("⏳ Step 4/4: Generating PDF report...");
+// Group preparedPins by plan file URL, preserving report order (index)
+const pinsByPdfUrl = new Map();
+for (let i = 0; i < preparedPins.length; i++) {
+  const pin = preparedPins[i];
+  const filePath = pin.plans?.file_url;
+  if (!filePath) continue;
+  const pdfUrl = supabase.storage.from("project-plans").getPublicUrl(filePath).data.publicUrl;
+  if (!pinsByPdfUrl.has(pdfUrl)) pinsByPdfUrl.set(pdfUrl, []);
+  pinsByPdfUrl.get(pdfUrl).push({ ...pin, _reportIndex: i });
+}
 
-// ── Inject logo URLs from org/project into the template config ────────────
-const resolvedConfig = templateConfig ? JSON.parse(JSON.stringify(templateConfig)) : {}
-resolvedConfig.header = resolvedConfig.header || {}
-resolvedConfig.header.logoUrl       = project?.organizations?.logo_url       || ''
-resolvedConfig.header.clientLogoUrl = project?.client_logo_url               || ''
+// One full-plan snapshot per unique PDF — all its pins overlaid
+const fullPlanSnapshots = {};  // planFileUrl → base64
+for (const [pdfUrl, pinsOnPlan] of pinsByPdfUrl.entries()) {
+  const pdfImg = pdfCache.get(pdfUrl);
+  if (!pdfImg) continue;
+  try {
+    const fileUrl = pinsOnPlan[0].plans.file_url;
+    fullPlanSnapshots[fileUrl] = await renderFullPlanSnapshot(pdfImg, pinsOnPlan);
+  } catch (err) {
+    console.error(`Full-plan snapshot failed for ${pdfUrl}:`, err.message);
+  }
+}
+
+// Also build a planName map: fileUrl → plan name
+const planNames = {};
+for (const pin of preparedPins) {
+  if (pin.plans?.file_url && pin.pdf_name) {
+    planNames[pin.plans.file_url] = pin.pdf_name;
+  }
+}
+
+console.log(`✅ Full-plan snapshots: ${Object.keys(fullPlanSnapshots).length} plan(s)\n`);
+console.log("⏳ Step 4/4: Generating PDF report...");
+
+const resolvedConfig = templateConfig ? JSON.parse(JSON.stringify(templateConfig)) : {};
+resolvedConfig.header = resolvedConfig.header || {};
+resolvedConfig.header.logoUrl       = project?.organizations?.logo_url || '';
+resolvedConfig.header.clientLogoUrl = project?.client_logo_url         || '';
 
 const PdfComponent = await loadPdfReportComponent();
 const pdfStream = await renderToStream(
   React.createElement(PdfComponent, {
-    selectedPins: preparedPins,
-    categories: categories || [],
-    statuses: statuses || [],
-    fields: fields || {},
-    displayMode: displayMode || "list",
-    selectedProject: project,
-    config: resolvedConfig,
-    participants: participants || [],
-    customSections: customSections || [],
+    selectedPins:      preparedPins,
+    categories:        categories || [],
+    statuses:          statuses || [],
+    fields:            fields || {},
+    displayMode:       displayMode || "list",
+    selectedProject:   project,
+    config:            resolvedConfig,
+    participants:      participants || [],
+    customSections:    customSections || [],
+    fullPlanSnapshots,   // ← new
+    planNames,           // ← new
   })
 );
 

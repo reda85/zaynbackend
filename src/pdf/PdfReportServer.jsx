@@ -50,7 +50,7 @@ const fontFamilyMap = {
   dmsans:     "DMSans",
 }
 
-const DEFAULT_SECTION_ORDER = ['summary', 'participants', 'signatures', 'tasks', 'customSections']
+const DEFAULT_SECTION_ORDER = ['summary', 'planOverviews' , 'participants', 'signatures', 'tasks', 'customSections']
 
 export const pdfIconsMap = {
   "grid":              path.join(projectRoot, "icons/grid-white.png"),
@@ -747,6 +747,8 @@ export default function PdfReportServer({
   config          = null,
   participants    = [],
   customSections  = [],
+  fullPlanSnapshots = {},   // ← add
+  planNames         = {},
 }) {
   const templateConfig    = normalizeConfig(config, displayMode);
   const primaryColor      = templateConfig.primaryColor || "#44403c";
@@ -779,7 +781,7 @@ export default function PdfReportServer({
   const headerProps = { templateConfig, selectedProject, primaryColor, fontFamily, hasLogo, hasClientLogo, logoH, clientLogoH };
 
   // ── These section ids each get their own dedicated Page ───────────────────
-  const OWN_PAGE_SECTIONS = new Set(['participants', 'signatures'])
+  const OWN_PAGE_SECTIONS = new Set(['participants', 'signatures',, 'planOverviews'])
 
   // ── Inline section renderer (renders View content, not a Page) ────────────
   const renderInlineSection = (sectionId) => {
@@ -879,6 +881,72 @@ export default function PdfReportServer({
         </Page>
       );
     }
+    if (sectionId === 'planOverviews') {
+  const entries = Object.entries(fullPlanSnapshots);
+  if (!entries.length) return null;
+
+  return entries.map(([fileUrl, snapshot]) => {
+    const planName = planNames[fileUrl] || fileUrl;
+    // Collect pins on this plan in report order
+    const pinsOnPlan = selectedPins
+      .map((p, i) => ({ pin: p, idx: i }))
+      .filter(({ pin }) => pin.plans?.file_url === fileUrl);
+
+    return (
+      <Page key={`plan-overview-${fileUrl}`} size="A4" style={pageStyle} wrap>
+        {showHeader && <PageHeader {...headerProps} />}
+        {showFooter && <PageFooter templateConfig={templateConfig} selectedProject={selectedProject} fontFamily={fontFamily} />}
+
+        <View style={{ marginBottom: 16 }}>
+          <View style={{ borderLeftWidth: 3, borderLeftColor: primaryColor, paddingLeft: 8, marginBottom: 12 }}>
+            <Text style={{ fontSize: 11, fontWeight: "bold", color: primaryColor, fontFamily }}>
+              Vue d'ensemble — {planName}
+            </Text>
+            <Text style={{ fontSize: 9, color: "#78716c", marginTop: 2, fontFamily }}>
+              {pinsOnPlan.length} tâche{pinsOnPlan.length > 1 ? 's' : ''} sur ce plan
+            </Text>
+          </View>
+
+          {/* Full-plan image */}
+          <Image
+            src={snapshot}
+            style={{
+              width: "100%",
+              borderRadius: 4,
+              border: `1pt solid ${primaryColor}`,
+            }}
+          />
+
+          {/* Legend: numbered dots matching the pins on this plan */}
+          <View style={{ marginTop: 12, flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {pinsOnPlan.map(({ pin, idx }) => {
+              const status   = statuses.find((s) => s.id === pin.status_id);
+              const category = categories.find((c) => String(c.id) === String(pin.category_id));
+              return (
+                <View key={pin.id} wrap={false} style={{ flexDirection: "row", alignItems: "center", gap: 5, width: "47%", marginBottom: 4 }}>
+                  {/* Red circle with number */}
+                  <View style={{ width: 18, height: 18, borderRadius: 9999, backgroundColor: "#E53E3E", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <Text style={{ fontSize: 7, color: "white", fontWeight: "bold", fontFamily }}>{idx + 1}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }} numberOfLines={1}>
+                      {pin.name || "Tâche sans nom"}
+                    </Text>
+                    <Text style={{ fontSize: 7, color: "#78716c", fontFamily }}>
+                      {pin.projects?.project_number}-{pin.pin_number}
+                      {category ? `  ·  ${category.name}` : ""}
+                      {status   ? `  ·  ${status.name}` : ""}
+                    </Text>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        </View>
+      </Page>
+    );
+  });
+}
 
     return null;
   }
