@@ -16,6 +16,7 @@ import multer from "multer";
 import fs from "fs-extra";
 import crypto from "crypto";
 import os from "os";
+import jwt from 'jsonwebtoken'
 
 import { promisify } from "util";
 import { exec as execCallback } from "child_process";
@@ -162,6 +163,86 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+
+function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization
+ 
+  if (!authHeader?.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing Authorization header' })
+  }
+ 
+  try {
+    const token = authHeader.slice(7)
+    const payload = jwt.verify(token, process.env.SUPABASE_JWT_SECRET)
+    req.user = { id: payload.sub, email: payload.email }
+    req.token = token   // forwarded to requireProjectMember
+    next()
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired token' })
+  }
+}
+
+
+// ── 2. requireProjectMember ───────────────────────────────────────────────────
+// Runs a scoped Supabase client with the USER's token so RLS enforces access.
+// If the user isn't a member of the project, the query returns null → 403.
+//
+// paramPath: where to find the projectId on req
+//   'body.projectId'  → POST /api/report
+//   'query.projectId' → GET  /api/mediareport
+ 
+function requireProjectMember(paramPath) {
+  return async function (req, res, next) {
+    const projectId = paramPath.split('.').reduce((o, k) => o?.[k], req)
+ 
+    if (!projectId) {
+      return res.status(400).json({ error: `Missing projectId (expected at ${paramPath})` })
+    }
+ 
+    // Scoped client — inherits the user's RLS policies
+    const { createClient } = await import('@supabase/supabase-js')
+    const userClient = createClient(
+      process.env.SUPABASE_URL,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,          // anon key + user token = RLS-scoped
+      { global: { headers: { Authorization: `Bearer ${req.token}` } } }
+    )
+ 
+    // members_organizations links users to orgs; projects belong to orgs.
+    // If RLS blocks this user from seeing this project → data is null → 403.
+    const { data } = await userClient
+      .from('projects')
+      .select('id')
+      .eq('id', projectId)
+      .maybeSingle()
+ 
+    if (!data) {
+      return res.status(403).json({ error: 'Access denied: not a member of this project' })
+    }
+ 
+    next()
+  }
+}
+ 
+// ── 3. requireSelf ────────────────────────────────────────────────────────────
+// Ensures the authenticated user can only touch their own resources.
+// E.g. registering or deleting their own push token.
+ 
+function requireSelf(paramPath) {
+  return function (req, res, next) {
+    const targetUserId = paramPath.split('.').reduce((o, k) => o?.[k], req)
+ 
+    if (!targetUserId) {
+      return res.status(400).json({ error: `Missing userId (expected at ${paramPath})` })
+    }
+ 
+    if (req.user.id !== targetUserId) {
+      return res.status(403).json({ error: 'Access denied: cannot act on behalf of another user' })
+    }
+ 
+    next()
+  }
+}
+ 
 // ------------------------
 // PDF.js setup
 const pdfjsLib = await (async () => {
@@ -463,7 +544,9 @@ async function renderFullPlanSnapshot(pdfImg, pins) {
 // REPORT ENDPOINTS
 // ========================================================================================
 
-app.post("/api/report", async (req, res) => {
+app.post("/api/report",
+  requireAuth,
+  requireProjectMember('body.projectId'), async (req, res) => {
   console.log("POST /api/report");
   const startTime = Date.now();
 
@@ -645,7 +728,10 @@ const pdfStream = await renderToStream(
   }
 });
 
-app.get("/api/mediareport", async (req, res) => {
+app.get("/api/mediareport",
+  requireAuth,
+  requireProjectMember('query.projectId'),
+   async (req, res) => {
   try {
     const { projectId, selectedIds } = req.query;
 
@@ -685,7 +771,7 @@ app.get("/api/mediareport", async (req, res) => {
         if (!pdfImg) {
           try {
             const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000, maxContentLength: 50 * 1024 * 1024 });
-            pdfImg = await renderPdfPage(Buffer.from(pdfResponse.data));
+            pdfImg = await renderPdfPageRobust(Buffer.from(pdfResponse.data));
             pdfCache.set(pdfUrl, pdfImg);
           } catch (error) {
             console.error(`Failed to process PDF for media ${media.id}:`, error.message);
@@ -1008,7 +1094,7 @@ app.get("/api/test-snapshot", async (req, res) => {
 
     const pdfUrl = supabase.storage.from("project-plans").getPublicUrl(filePath).data.publicUrl;
     const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000 });
-    const pdfImg = await renderPdfPage(Buffer.from(pdfResponse.data));
+    const pdfImg = await renderPdfPageRobust(Buffer.from(pdfResponse.data));
 
     if (pin.x === undefined || pin.y === undefined) {
       return res.status(400).json({ error: "Pin missing x or y coordinates", availableFields: Object.keys(pin), pinData: pin });
