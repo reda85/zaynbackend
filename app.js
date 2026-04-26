@@ -551,11 +551,13 @@ app.post("/api/report",
   const startTime = Date.now();
 
   try {
-    const { projectId, selectedIds, fields, displayMode, templateConfig, participants, customSections } = req.body;
+    const { projectId, selectedIds, fields, displayMode, templateConfig, reportTitle, participants, planningImages, planningObservations, customSections } = req.body;
 
     if (!projectId || !selectedIds) {
       return res.status(400).json({ error: "Missing required parameters: projectId and selectedIds" });
     }
+
+    
 
     const ids = selectedIds;
     console.log(`\n${"=".repeat(80)}`);
@@ -687,6 +689,10 @@ resolvedConfig.header = resolvedConfig.header || {};
 resolvedConfig.header.logoUrl       = project?.organizations?.logo_url || '';
 resolvedConfig.header.clientLogoUrl = project?.client_logo_url         || '';
 
+const finalConfig = reportTitle
+    ? { ...resolvedConfig, reportTitle }
+    : resolvedConfig;
+
 const PdfComponent = await loadPdfReportComponent();
 const pdfStream = await renderToStream(
   React.createElement(PdfComponent, {
@@ -696,9 +702,11 @@ const pdfStream = await renderToStream(
     fields:            fields || {},
     displayMode:       displayMode || "list",
     selectedProject:   project,
-    config:            resolvedConfig,
+    config:            finalConfig,
     participants:      participants || [],
     customSections:    customSections || [],
+    planningImages:    planningImages || [],
+    planningObservations: planningObservations || null,
     fullPlanSnapshots,   // ← new
     planNames,           // ← new
   })

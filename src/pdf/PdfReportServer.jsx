@@ -6,6 +6,7 @@ import { createTw } from "react-pdf-tailwind";
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import RichTextPdfRenderer from './RichTextPdfrenderer.jsx';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = dirname(__filename);
@@ -50,7 +51,7 @@ const fontFamilyMap = {
   dmsans:     "DMSans",
 }
 
-const DEFAULT_SECTION_ORDER = ['summary', 'planOverviews' , 'participants', 'signatures', 'tasks', 'customSections']
+const DEFAULT_SECTION_ORDER = ['summary', 'planOverviews', 'planning', 'participants', 'signatures', 'tasks', 'customSections']
 
 export const pdfIconsMap = {
   "grid":              path.join(projectRoot, "icons/grid-white.png"),
@@ -107,6 +108,16 @@ const chunkArray = (arr, n) => {
 const logoHeightMap = { small: 24, medium: 36, large: 52 };
 const HEADER_HEIGHT = 64;
 const FOOTER_HEIGHT = 32;
+
+// Helper: detect if a TipTap document has actual content
+const hasRichTextContent = (doc) => {
+  if (!doc || !doc.content || doc.content.length === 0) return false
+  if (doc.content.length === 1 && doc.content[0].type === 'paragraph') {
+    const inner = doc.content[0].content
+    if (!inner || inner.length === 0) return false
+  }
+  return true
+}
 
 // ── Section title style helper ────────────────────────────────────────────────
 const getSectionTitleStyle = (sectionTitles, primaryColor, fontFamily) => {
@@ -165,6 +176,15 @@ const normalizeConfig = (config, displayMode) => {
       showStatusBreakdown: true,
       backgroundColor:     "#f5f5f4",
       ...(base.summary || {}),
+    },
+    planning: {
+      enabled:           false,
+      title:             "Pointage de planning",
+      imagesPerPage:     1,
+      fitMode:           "contain",
+      showObservations:  true,
+      observationsTitle: "Retards et observations",
+      ...(base.planning || {}),
     },
     tasks: {
       displayMode,
@@ -242,7 +262,6 @@ const normalizeConfig = (config, displayMode) => {
   }
 }
 
-// ── PDF Category Label ────────────────────────────────────────────────────────
 function PdfCategoryLabel({ category, status }) {
   const iconSrc = pdfIconsMap[category?.icon];
   return (
@@ -252,7 +271,6 @@ function PdfCategoryLabel({ category, status }) {
   );
 }
 
-// ── Table Cell ────────────────────────────────────────────────────────────────
 const TableCell = ({ children, header, width, align = "left", border = true, config, fontFamily }) => (
   <View style={{
     width: width || "auto",
@@ -271,7 +289,6 @@ const TableCell = ({ children, header, width, align = "left", border = true, con
   </View>
 );
 
-// ── Table View ────────────────────────────────────────────────────────────────
 const TableView = ({ selectedPins, categories, statuses, fields, config, fontFamily }) => {
   const photoSizeMap = { small: { width: 80, height: 80 }, medium: { width: 120, height: 120 }, large: { width: 160, height: 160 } };
   const photoSize    = photoSizeMap[config?.tableView?.photoSize || 'medium'];
@@ -320,8 +337,6 @@ const TableView = ({ selectedPins, categories, statuses, fields, config, fontFam
   );
 };
 
-// ── List View ─────────────────────────────────────────────────────────────────
-// ── List View ─────────────────────────────────────────────────────────────────
 const ListView = ({ selectedPins, categories, statuses, fields, config, fontFamily }) => {
   const snapshotSizeMap = { small: { width: 100, height: 100 }, medium: { width: 120, height: 120 }, large: { width: 140, height: 140 } };
   const snapshotSize    = snapshotSizeMap[config?.listView?.snapshotSize || 'large'];
@@ -405,7 +420,6 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
               </View>
             </View>
 
-            {/* ── Photos ── */}
             {fields.photos && pin.pins_photos?.length > 0 && (
               <View style={{ marginTop: 8 }}>
                 <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", marginBottom: 6, fontFamily }}>Médias</Text>
@@ -420,7 +434,6 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
               </View>
             )}
 
-            {/* ── Comments ── */}
             {comments.length > 0 && (
               <View style={{ marginTop: 10 }}>
                 <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", marginBottom: 6, fontFamily }}>Commentaires</Text>
@@ -452,14 +465,12 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
   );
 };
 
-// ── Photo Gallery View ────────────────────────────────────────────────────────
 const PhotoGalleryView = ({ selectedPins, statuses, config, fontFamily }) => {
   const photosPerRow    = config?.tasks?.photosPerRow ?? 3
   const showName        = config?.tasks?.galleryShowName ?? true
   const showDescription = config?.tasks?.galleryShowDescription ?? false
   const showStatus      = config?.tasks?.galleryShowStatus ?? true
 
-  // A4 content width: 595pt - 64pt padding = 531pt
   const CONTENT_WIDTH = 531
   const GAP           = 4
   const ROW_GAP       = 12
@@ -473,7 +484,6 @@ const PhotoGalleryView = ({ selectedPins, statuses, config, fontFamily }) => {
     </View>
   )
 
-  // Collect ALL photos from all pins into a flat list with metadata
   const allPhotos = pinsWithPhotos.flatMap(pin => {
     const status = statuses.find(s => s.id === pin.status_id)
     return (pin.pins_photos || []).map(photo => ({
@@ -490,8 +500,6 @@ const PhotoGalleryView = ({ selectedPins, statuses, config, fontFamily }) => {
   return (
     <View style={{ marginTop: 8 }}>
       {rows.map((row, rowIndex) => (
-        // FIX: wrap={false} prevents a row from being split across two pages
-        // FIX: marginBottom uses ROW_GAP (12pt) instead of GAP (4pt)
         <View key={rowIndex} wrap={false} style={{ flexDirection: "row", gap: GAP, marginBottom: ROW_GAP }}>
           {row.map((item, i) => (
             <View key={i} style={{ width: colWidth }}>
@@ -520,7 +528,6 @@ const PhotoGalleryView = ({ selectedPins, statuses, config, fontFamily }) => {
   )
 }
 
-// ── Participants Section content ───────────────────────────────────────────────
 const ParticipantsSectionContent = ({ participants = [], config, primaryColor, fontFamily, sectionTitles }) => {
   const pc                            = config?.participants || {};
   const isGrid                        = (pc.layout || 'grid') === 'grid';
@@ -562,37 +569,27 @@ const ParticipantsSectionContent = ({ participants = [], config, primaryColor, f
   );
 };
 
-// ── Custom Sections ───────────────────────────────────────────────────────────
+// ── Custom Sections (RICH TEXT) ───────────────────────────────────────────────
 const CustomSectionsView = ({ customSections = [], primaryColor, fontFamily, sectionTitles }) => {
-  const enabled = customSections.filter((s) => s.content?.trim());
-  if (!enabled.length) return null;
-  const { containerStyle, textStyle } = getSectionTitleStyle(sectionTitles, primaryColor, fontFamily);
+  const enabled = customSections.filter((s) => hasRichTextContent(s.content))
+  if (!enabled.length) return null
+  const { containerStyle, textStyle } = getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)
   return (
     <>
       {enabled.map((section) => (
-        <View key={section.id} style={{ marginTop: 32 }} wrap={false}>
+        <View key={section.id} style={{ marginTop: 24 }} wrap={false}>
           <View style={containerStyle}><Text style={textStyle}>{section.title}</Text></View>
-          {section.type === 'list' ? (
-            <View style={{ gap: 6 }}>
-              {section.content.split('\n').map((l) => l.trim()).filter(Boolean).map((line, i) => (
-                <View key={i} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-                  <View style={{ width: 4, height: 4, borderRadius: 9999, backgroundColor: primaryColor, marginTop: 4, flexShrink: 0 }} />
-                  <Text style={{ fontSize: 9, color: "#44403c", flex: 1, fontFamily }}>{line}</Text>
-                </View>
-              ))}
-            </View>
-          ) : (
-            <View style={{ backgroundColor: "#f5f5f4", padding: 12, borderRadius: 4 }}>
-              <Text style={{ fontSize: 9, color: "#44403c", lineHeight: 1.6, fontFamily }}>{section.content}</Text>
-            </View>
-          )}
+          <RichTextPdfRenderer
+            content={section.content}
+            fontFamily={fontFamily}
+            primaryColor={primaryColor}
+          />
         </View>
       ))}
     </>
-  );
-};
+  )
+}
 
-// ── Signatures content ────────────────────────────────────────────────────────
 const SignaturesContent = ({ config, primaryColor, fontFamily, sectionTitles }) => {
   const sc = config?.signatures;
   if (!sc?.enabled) return null;
@@ -615,7 +612,6 @@ const SignaturesContent = ({ config, primaryColor, fontFamily, sectionTitles }) 
   );
 };
 
-// ── Cover Page Title ──────────────────────────────────────────────────────────
 const CoverTitle = ({ config, primaryColor, projectName, fontFamily }) => {
   const cp           = config?.coverPage || {};
   const titleStyle   = cp.titleStyle   || 'bold';
@@ -660,7 +656,6 @@ const CoverTitle = ({ config, primaryColor, projectName, fontFamily }) => {
   );
 };
 
-// ── Cover Page ────────────────────────────────────────────────────────────────
 const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionTitles }) => {
   if (!config?.coverPage?.enabled) return null;
   const primaryColor    = config?.primaryColor || "#44403c";
@@ -669,7 +664,6 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
   const clientLogoSize  = logoSizeMap[config.coverPage?.clientLogoSize  || 'medium'];
   const companyLogoUrl  = config.header?.logoUrl       || config.coverPage?.companyLogoUrl || null;
   const clientLogoUrl   = config.header?.clientLogoUrl || config.coverPage?.clientLogoUrl  || null;
-  const showParticipants = config.participants?.enabled && participants?.length > 0;
   return (
     <Page size="A4" style={{ backgroundColor: "white" }}>
       <View style={{ flex: 1, padding: 50, fontFamily }}>
@@ -695,7 +689,6 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
             <Text style={{ fontSize: 11, color: "#44403c", fontFamily }}>"Le projet progresse conformément au planning."</Text>
           </View>
         )}
-     
         <View style={{ marginTop: "auto", paddingTop: 20, borderTopWidth: 1, borderTopColor: "#e7e5e4", flexDirection: "row", justifyContent: "space-between" }}>
           <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>{selectedProject?.organizations?.name || "Organisation"}</Text>
           <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>{new Date().toLocaleDateString("fr-FR")}</Text>
@@ -705,7 +698,6 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
   );
 };
 
-// ── Fixed header component (used on every content page) ───────────────────────
 const PageHeader = ({ templateConfig, selectedProject, primaryColor, fontFamily, hasLogo, hasClientLogo, logoH, clientLogoH }) => (
   <View fixed style={{ position: "absolute", top: 0, left: 0, right: 0, height: HEADER_HEIGHT, paddingHorizontal: 32, paddingVertical: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", borderBottomWidth: 1, borderBottomColor: "#e7e5e4" }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
@@ -722,7 +714,6 @@ const PageHeader = ({ templateConfig, selectedProject, primaryColor, fontFamily,
   </View>
 )
 
-// ── Fixed footer component (used on every content page) ───────────────────────
 const PageFooter = ({ templateConfig, selectedProject, fontFamily }) => (
   <View fixed style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: FOOTER_HEIGHT, paddingHorizontal: 32, paddingVertical: 8, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderTopWidth: 1, borderTopColor: "#e7e5e4", backgroundColor: "white" }}>
     <View style={{ flexDirection: "row", gap: 16 }}>
@@ -736,19 +727,20 @@ const PageFooter = ({ templateConfig, selectedProject, fontFamily }) => (
   </View>
 )
 
-// ── Main Component ────────────────────────────────────────────────────────────
 export default function PdfReportServer({
-  selectedPins    = [],
-  categories      = [],
-  statuses        = [],
-  selectedProject = {},
-  fields          = {},
-  displayMode     = "list",
-  config          = null,
-  participants    = [],
-  customSections  = [],
-  fullPlanSnapshots = {},   // ← add
-  planNames         = {},
+  selectedPins        = [],
+  categories          = [],
+  statuses            = [],
+  selectedProject     = {},
+  fields              = {},
+  displayMode         = "list",
+  config              = null,
+  participants        = [],
+  customSections      = [],
+  fullPlanSnapshots   = {},
+  planNames           = {},
+  planningImages      = [],
+  planningObservations = null,
 }) {
   const templateConfig    = normalizeConfig(config, displayMode);
   const primaryColor      = templateConfig.primaryColor || "#44403c";
@@ -763,7 +755,6 @@ export default function PdfReportServer({
   const logoH       = logoHeightMap[templateConfig.header?.logoSize       || 'medium'];
   const clientLogoH = logoHeightMap[templateConfig.header?.clientLogoSize || 'medium'];
 
-  // ── Logo: show if toggle enabled AND url exists ───────────────────────────
   const hasLogo       = !!(templateConfig.header?.showLogo       && templateConfig.header?.logoUrl);
   const hasClientLogo = !!(templateConfig.header?.showClientLogo && templateConfig.header?.clientLogoUrl);
 
@@ -780,10 +771,8 @@ export default function PdfReportServer({
 
   const headerProps = { templateConfig, selectedProject, primaryColor, fontFamily, hasLogo, hasClientLogo, logoH, clientLogoH };
 
-  // ── These section ids each get their own dedicated Page ───────────────────
-  const OWN_PAGE_SECTIONS = new Set(['participants', 'signatures',, 'planOverviews'])
+  const OWN_PAGE_SECTIONS = new Set(['participants', 'signatures', 'planOverviews', 'planning'])
 
-  // ── Inline section renderer (renders View content, not a Page) ────────────
   const renderInlineSection = (sectionId) => {
     switch (sectionId) {
 
@@ -856,7 +845,6 @@ export default function PdfReportServer({
     }
   }
 
-  // ── Own-page section renderer ─────────────────────────────────────────────
   const renderOwnPageSection = (sectionId) => {
     if (sectionId === 'participants') {
       if (!templateConfig.participants?.enabled || participants.length === 0) return null;
@@ -881,85 +869,182 @@ export default function PdfReportServer({
         </Page>
       );
     }
+
     if (sectionId === 'planOverviews') {
-  const entries = Object.entries(fullPlanSnapshots);
-  if (!entries.length) return null;
+      const entries = Object.entries(fullPlanSnapshots);
+      if (!entries.length) return null;
 
-  return entries.map(([fileUrl, snapshot]) => {
-    const planName = planNames[fileUrl] || fileUrl;
-    // Collect pins on this plan in report order
-    const pinsOnPlan = selectedPins
-      .map((p, i) => ({ pin: p, idx: i }))
-      .filter(({ pin }) => pin.plans?.file_url === fileUrl);
+      return entries.map(([fileUrl, snapshot]) => {
+        const planName = planNames[fileUrl] || fileUrl;
+        const pinsOnPlan = selectedPins
+          .map((p, i) => ({ pin: p, idx: i }))
+          .filter(({ pin }) => pin.plans?.file_url === fileUrl);
 
-    return (
-      <Page key={`plan-overview-${fileUrl}`} size="A4" style={pageStyle} wrap>
+        return (
+          <Page key={`plan-overview-${fileUrl}`} size="A4" style={pageStyle} wrap>
+            {showHeader && <PageHeader {...headerProps} />}
+            {showFooter && <PageFooter templateConfig={templateConfig} selectedProject={selectedProject} fontFamily={fontFamily} />}
+
+            <View style={{ marginBottom: 16 }}>
+              <View style={{ borderLeftWidth: 3, borderLeftColor: primaryColor, paddingLeft: 8, marginBottom: 12 }}>
+                <Text style={{ fontSize: 11, fontWeight: "bold", color: primaryColor, fontFamily }}>
+                  Vue d'ensemble — {planName}
+                </Text>
+                <Text style={{ fontSize: 9, color: "#78716c", marginTop: 2, fontFamily }}>
+                  {pinsOnPlan.length} tâche{pinsOnPlan.length > 1 ? 's' : ''} sur ce plan
+                </Text>
+              </View>
+
+              <Image
+                src={snapshot}
+                style={{
+                  width: "100%",
+                  borderRadius: 4,
+                  border: `1pt solid ${primaryColor}`,
+                }}
+              />
+
+              <View style={{ marginTop: 12, flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                {pinsOnPlan.map(({ pin, idx }) => {
+                  const status   = statuses.find((s) => s.id === pin.status_id);
+                  const category = categories.find((c) => String(c.id) === String(pin.category_id));
+                  return (
+                    <View key={pin.id} wrap={false} style={{ flexDirection: "row", alignItems: "center", gap: 5, width: "47%", marginBottom: 4 }}>
+                      <View style={{ width: 18, height: 18, borderRadius: 9999, backgroundColor: "#E53E3E", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        <Text style={{ fontSize: 7, color: "white", fontWeight: "bold", fontFamily }}>{idx + 1}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }} numberOfLines={1}>
+                          {pin.name || "Tâche sans nom"}
+                        </Text>
+                        <Text style={{ fontSize: 7, color: "#78716c", fontFamily }}>
+                          {pin.projects?.project_number}-{pin.pin_number}
+                          {category ? `  ·  ${category.name}` : ""}
+                          {status   ? `  ·  ${status.name}` : ""}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          </Page>
+        );
+      });
+    }
+
+if (sectionId === 'planning') {
+  if (!templateConfig.planning?.enabled) return null
+  const images = planningImages || []
+  const observations = planningObservations
+  const hasObservations = templateConfig.planning?.showObservations && hasRichTextContent(observations)
+
+  if (!images.length && !hasObservations) return null
+
+  const imagesPerPage = templateConfig.planning?.imagesPerPage || 1
+  const fitMode       = templateConfig.planning?.fitMode || 'contain'
+  const planningTitle = templateConfig.planning?.title || 'Pointage de planning'
+  const observationsTitle = templateConfig.planning?.observationsTitle || 'Retards et observations'
+  const { containerStyle, textStyle } = getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)
+
+  // ── A4 layout calculations ────────────────────────────────────────────────
+  const A4_HEIGHT       = 841.89
+  const A4_WIDTH        = 595.28
+  const HORIZONTAL_PAD  = 32 * 2
+  const contentWidth    = A4_WIDTH - HORIZONTAL_PAD
+  const contentHeight   = A4_HEIGHT - paddingTop - paddingBottom
+  const TITLE_HEIGHT    = 30
+  const GAP_BETWEEN     = 12
+  // Reserve space on the last image page if observations follow inline
+  const OBSERVATIONS_RESERVED_HEIGHT = 180  // ~space for title + ~6 lines of text
+
+  const imagePages = chunkArray(images, imagesPerPage)
+  const pages = []
+
+  // ── Case 1: no images, only observations ──────────────────────────────────
+  if (imagePages.length === 0 && hasObservations) {
+    pages.push(
+      <Page key="planning-observations-only" size="A4" style={pageStyle} wrap>
+        {showHeader && <PageHeader {...headerProps} />}
+        {showFooter && <PageFooter templateConfig={templateConfig} selectedProject={selectedProject} fontFamily={fontFamily} />}
+        <View style={containerStyle}>
+          <Text style={textStyle}>{observationsTitle}</Text>
+        </View>
+        <RichTextPdfRenderer content={observations} fontFamily={fontFamily} primaryColor={primaryColor} />
+      </Page>
+    )
+    return pages
+  }
+
+  // ── Case 2: images exist, possibly with observations after ────────────────
+  imagePages.forEach((pageImages, pageIdx) => {
+    const isFirstPage   = pageIdx === 0
+    const isLastPage    = pageIdx === imagePages.length - 1
+    const titleOverhead = isFirstPage ? TITLE_HEIGHT : 0
+    const totalGaps     = (pageImages.length - 1) * GAP_BETWEEN
+
+    // On the last image page, if observations follow, reserve space for them
+    const observationsOverhead = (isLastPage && hasObservations) ? OBSERVATIONS_RESERVED_HEIGHT : 0
+
+    const availableHeight = contentHeight - titleOverhead - totalGaps - observationsOverhead
+    const imageHeight     = availableHeight / pageImages.length
+
+    pages.push(
+      <Page
+        key={`planning-images-${pageIdx}`}
+        size="A4"
+        style={pageStyle}
+        wrap={isLastPage && hasObservations}  // wrap only the last page (for observations overflow)
+      >
         {showHeader && <PageHeader {...headerProps} />}
         {showFooter && <PageFooter templateConfig={templateConfig} selectedProject={selectedProject} fontFamily={fontFamily} />}
 
-        <View style={{ marginBottom: 16 }}>
-          <View style={{ borderLeftWidth: 3, borderLeftColor: primaryColor, paddingLeft: 8, marginBottom: 12 }}>
-            <Text style={{ fontSize: 11, fontWeight: "bold", color: primaryColor, fontFamily }}>
-              Vue d'ensemble — {planName}
-            </Text>
-            <Text style={{ fontSize: 9, color: "#78716c", marginTop: 2, fontFamily }}>
-              {pinsOnPlan.length} tâche{pinsOnPlan.length > 1 ? 's' : ''} sur ce plan
-            </Text>
+        {isFirstPage && (
+          <View style={containerStyle}>
+            <Text style={textStyle}>{planningTitle}</Text>
           </View>
+        )}
 
-          {/* Full-plan image */}
-          <Image
-            src={snapshot}
-            style={{
-              width: "100%",
-              borderRadius: 4,
-              border: `1pt solid ${primaryColor}`,
-            }}
-          />
-
-          {/* Legend: numbered dots matching the pins on this plan */}
-          <View style={{ marginTop: 12, flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            {pinsOnPlan.map(({ pin, idx }) => {
-              const status   = statuses.find((s) => s.id === pin.status_id);
-              const category = categories.find((c) => String(c.id) === String(pin.category_id));
-              return (
-                <View key={pin.id} wrap={false} style={{ flexDirection: "row", alignItems: "center", gap: 5, width: "47%", marginBottom: 4 }}>
-                  {/* Red circle with number */}
-                  <View style={{ width: 18, height: 18, borderRadius: 9999, backgroundColor: "#E53E3E", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <Text style={{ fontSize: 7, color: "white", fontWeight: "bold", fontFamily }}>{idx + 1}</Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }} numberOfLines={1}>
-                      {pin.name || "Tâche sans nom"}
-                    </Text>
-                    <Text style={{ fontSize: 7, color: "#78716c", fontFamily }}>
-                      {pin.projects?.project_number}-{pin.pin_number}
-                      {category ? `  ·  ${category.name}` : ""}
-                      {status   ? `  ·  ${status.name}` : ""}
-                    </Text>
-                  </View>
-                </View>
-              );
-            })}
-          </View>
+        <View style={{ flexDirection: 'column' }}>
+          {pageImages.map((imageUrl, imgIdx) => (
+            <View
+              key={imgIdx}
+              style={{
+                width:        contentWidth,
+                height:       imageHeight,
+                marginBottom: imgIdx < pageImages.length - 1 ? GAP_BETWEEN : 0,
+              }}
+            >
+              <Image
+                src={imageUrl}
+                style={{
+                  width:        contentWidth,
+                  height:       imageHeight,
+                  objectFit:    fitMode,
+                  borderRadius: 4,
+                }}
+              />
+            </View>
+          ))}
         </View>
+
+        {/* Observations rendered inline on the last image page */}
+        {isLastPage && hasObservations && (
+          <View style={{ marginTop: 16 }}>
+            <View style={containerStyle}>
+              <Text style={textStyle}>{observationsTitle}</Text>
+            </View>
+            <RichTextPdfRenderer content={observations} fontFamily={fontFamily} primaryColor={primaryColor} />
+          </View>
+        )}
       </Page>
-    );
-  });
+    )
+  })
+
+  return pages
 }
-
-    return null;
+    return null
   }
-
-  // ── Build document output respecting sectionOrder ─────────────────────────
-  // Strategy:
-  // - Collect consecutive inline sections into ONE main Page
-  // - Each own-page section becomes its own <Page>
-  // - Order is strictly sectionOrder
-  //
-  // We group the sectionOrder into "runs":
-  //   run = { type: 'inline', ids: [...] } | { type: 'page', id }
-  // Then render each run in order.
 
   const runs = []
   let currentInlineRun = null
@@ -983,8 +1068,6 @@ export default function PdfReportServer({
         if (run.type === 'page') {
           return renderOwnPageSection(run.id)
         }
-        // FIX: pre-render inline sections and skip the Page entirely if all sections are null/disabled
-        // This prevents blank pages when all sections in a run are toggled off (e.g. summary disabled)
         const renderedSections = run.ids.map(id => renderInlineSection(id)).filter(Boolean)
         if (!renderedSections.length) return null
         return (
