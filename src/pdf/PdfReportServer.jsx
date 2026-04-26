@@ -662,33 +662,70 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
   const logoSizeMap     = { small: { width: 80, height: 56 }, medium: { width: 112, height: 80 }, large: { width: 144, height: 96 } };
   const companyLogoSize = logoSizeMap[config.coverPage?.companyLogoSize || 'medium'];
   const clientLogoSize  = logoSizeMap[config.coverPage?.clientLogoSize  || 'medium'];
-  const companyLogoUrl  = config.header?.logoUrl       || config.coverPage?.companyLogoUrl || null;
-  const clientLogoUrl   = config.header?.clientLogoUrl || config.coverPage?.clientLogoUrl  || null;
+
+  // ── Real project data sources ─────────────────────────────────────────────
+  const companyLogoUrl  = selectedProject?.organizations?.logo_url || config.header?.logoUrl || null;
+  const clientLogoUrl   = selectedProject?.client_logo_url         || config.header?.clientLogoUrl || null;
+  const projectPhotoUrl = selectedProject?.picture_url             || null;
+  const projectAddress  = selectedProject?.adress                  || null;
+
+  // Photo size mapping
+  const photoSizeMap = {
+    small:  { width: "256pt", height: 192 },
+    medium: { width: "66%",   height: 256 },
+    large:  { width: "80%",   height: 320 },
+    full:   { width: "100%",  height: 384 },
+  };
+  const photoStyle = photoSizeMap[config.coverPage?.projectPhotoSize || 'medium'];
+
   return (
     <Page size="A4" style={{ backgroundColor: "white" }}>
       <View style={{ flex: 1, padding: 50, fontFamily }}>
+
+        {/* Logos */}
         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 48 }}>
-          {config.coverPage?.showCompanyLogo ? (companyLogoUrl ? <Image src={companyLogoUrl} style={{ width: companyLogoSize.width, height: companyLogoSize.height, objectFit: "contain" }} /> : <View style={{ width: companyLogoSize.width, height: companyLogoSize.height }} />) : <View />}
-          {config.coverPage?.showClientLogo  ? (clientLogoUrl  ? <Image src={clientLogoUrl}  style={{ width: clientLogoSize.width,  height: clientLogoSize.height,  objectFit: "contain" }} /> : <View style={{ width: clientLogoSize.width,  height: clientLogoSize.height  }} />) : <View />}
+          {config.coverPage?.showCompanyLogo && companyLogoUrl && (
+            <Image src={companyLogoUrl} style={{ width: companyLogoSize.width, height: companyLogoSize.height, objectFit: "contain" }} />
+          )}
+          {config.coverPage?.showClientLogo && clientLogoUrl && (
+            <Image src={clientLogoUrl} style={{ width: clientLogoSize.width, height: clientLogoSize.height, objectFit: "contain" }} />
+          )}
         </View>
+
+        {/* Title */}
         <CoverTitle config={config} primaryColor={primaryColor} projectName={selectedProject?.name} fontFamily={fontFamily} />
-        {config.coverPage?.showProjectPhoto && (
-          <View style={{ alignItems: "center", marginBottom: 32 }}>
-            <View style={{
-              width:  config.coverPage.projectPhotoSize === 'full' ? "100%" : config.coverPage.projectPhotoSize === 'large' ? "80%" : config.coverPage.projectPhotoSize === 'medium' ? "66%" : "256",
-              height: config.coverPage.projectPhotoSize === 'full' ? 384   : config.coverPage.projectPhotoSize === 'large' ? 320  : config.coverPage.projectPhotoSize === 'medium' ? 256  : 192,
-              backgroundColor: "#f5f5f4", borderRadius: 8, alignItems: "center", justifyContent: "center",
-            }}>
-              <Text style={{ fontSize: 10, color: "#a8a29e", fontFamily }}>Photo de projet</Text>
-            </View>
+
+        {/* Project photo */}
+        {config.coverPage?.showProjectPhoto && projectPhotoUrl && (
+          <View style={{ alignItems: "center", marginBottom: 12 }}>
+            <Image
+              src={projectPhotoUrl}
+              style={{
+                width:  photoStyle.width,
+                height: photoStyle.height,
+                objectFit: "cover",
+                borderRadius: 8,
+              }}
+            />
           </View>
         )}
+
+        {/* Project address — under the photo */}
+        {projectAddress && (
+          <View style={{ alignItems: "center", marginBottom: 32 }}>
+            <Text style={{ fontSize: 11, color: "#78716c", fontFamily }}>{projectAddress}</Text>
+          </View>
+        )}
+
+        {/* Executive summary */}
         {config.coverPage?.showSummary && (
           <View style={{ backgroundColor: "#f5f5f4", padding: 20, borderRadius: 8, borderLeftWidth: 4, borderLeftColor: primaryColor, marginBottom: 24 }}>
             <Text style={{ fontSize: 9, fontWeight: "bold", color: primaryColor, marginBottom: 6, fontFamily }}>RÉSUMÉ EXÉCUTIF</Text>
             <Text style={{ fontSize: 11, color: "#44403c", fontFamily }}>"Le projet progresse conformément au planning."</Text>
           </View>
         )}
+
+        {/* Footer */}
         <View style={{ marginTop: "auto", paddingTop: 20, borderTopWidth: 1, borderTopColor: "#e7e5e4", flexDirection: "row", justifyContent: "space-between" }}>
           <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>{selectedProject?.organizations?.name || "Organisation"}</Text>
           <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>{new Date().toLocaleDateString("fr-FR")}</Text>
@@ -697,7 +734,6 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
     </Page>
   );
 };
-
 const PageHeader = ({ templateConfig, selectedProject, primaryColor, fontFamily, hasLogo, hasClientLogo, logoH, clientLogoH }) => (
   <View fixed style={{ position: "absolute", top: 0, left: 0, right: 0, height: HEADER_HEIGHT, paddingHorizontal: 32, paddingVertical: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", borderBottomWidth: 1, borderBottomColor: "#e7e5e4" }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
