@@ -693,6 +693,24 @@ const finalConfig = reportTitle
     ? { ...resolvedConfig, reportTitle }
     : resolvedConfig;
 
+// ── NEW: Normalize customSections — accept both old array format AND new object format ──
+// - Old format (legacy clients): array [{id, title, enabled, content}, ...]
+// - New format (current web/mobile): object { [sectionId]: TipTapDoc }
+let customSectionContents = {};
+let templateCustomSections = finalConfig?.customSections || [];
+
+if (customSections) {
+    if (Array.isArray(customSections)) {
+        // Legacy: array → convert to { id: content } map
+        customSections.forEach(s => {
+            if (s.id != null) customSectionContents[s.id] = s.content;
+        });
+    } else if (typeof customSections === 'object') {
+        // New: already a map
+        customSectionContents = customSections;
+    }
+}
+
 const PdfComponent = await loadPdfReportComponent();
 const pdfStream = await renderToStream(
   React.createElement(PdfComponent, {
@@ -704,14 +722,18 @@ const pdfStream = await renderToStream(
     selectedProject:   project,
     config:            finalConfig,
     participants:      participants || [],
-    customSections:    customSections || [],
-    planningImages:    planningImages || [],
-    planningObservations: planningObservations || null,
-    fullPlanSnapshots,   // ← new
-    planNames,           // ← new
+    // ← The TEMPLATE-SIDE array of section definitions (id/title/enabled)
+    customSections:    templateCustomSections,
+    fullPlanSnapshots,
+    planNames,
+    // ← All dynamic per-report content goes inside reportContent
+    reportContent: {
+      planningImages:        planningImages || [],
+      planningObservations:  planningObservations || null,
+      customSectionContents,
+    },
   })
 );
-
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="report-${projectId}-${Date.now()}.pdf"`);
     pdfStream.pipe(res);
