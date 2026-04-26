@@ -693,23 +693,40 @@ const finalConfig = reportTitle
     ? { ...resolvedConfig, reportTitle }
     : resolvedConfig;
 
-// ── NEW: Normalize customSections — accept both old array format AND new object format ──
-// - Old format (legacy clients): array [{id, title, enabled, content}, ...]
-// - New format (current web/mobile): object { [sectionId]: TipTapDoc }
+// ── Normalize customSections from request body ─────────────────────────────────
+// Two formats can arrive:
+//  - Legacy: array [{id, title, enabled, content}, ...] from old clients
+//  - New:    object { [sectionId]: TipTapDoc } from web/mobile current
 let customSectionContents = {};
-let templateCustomSections = finalConfig?.customSections || [];
 
 if (customSections) {
     if (Array.isArray(customSections)) {
-        // Legacy: array → convert to { id: content } map
         customSections.forEach(s => {
             if (s.id != null) customSectionContents[s.id] = s.content;
         });
     } else if (typeof customSections === 'object') {
-        // New: already a map
         customSectionContents = customSections;
     }
 }
+
+// Build the array form for the PdfReportServer:
+// take template's customSections (the structure: id/title/enabled)
+// and inject the corresponding content into each one.
+const templateCustomSections = finalConfig?.customSections || [];
+const enrichedCustomSections = templateCustomSections.map(s => ({
+    ...s,
+    content: customSectionContents[s.id] ?? customSectionContents[String(s.id)] ?? null,
+}));
+
+// ── DEBUG LOGGING — remove once confirmed working ─────────────────────────────
+console.log('🔍 templateConfig.planning:', JSON.stringify(finalConfig?.planning, null, 2));
+console.log('🔍 templateConfig.sectionOrder:', finalConfig?.sectionOrder);
+console.log('🔍 enrichedCustomSections count:', enrichedCustomSections.length);
+console.log('🔍 enrichedCustomSections sample:', JSON.stringify(enrichedCustomSections[0], null, 2));
+console.log('🔍 planningImages count:', (planningImages || []).length);
+console.log('🔍 planningImages URLs:', planningImages);
+console.log('🔍 planningObservations:', planningObservations ? 'present' : 'null');
+console.log('🔍 customSectionContents keys:', Object.keys(customSectionContents));
 
 const PdfComponent = await loadPdfReportComponent();
 const pdfStream = await renderToStream(
@@ -722,11 +739,14 @@ const pdfStream = await renderToStream(
     selectedProject:   project,
     config:            finalConfig,
     participants:      participants || [],
-    // ← The TEMPLATE-SIDE array of section definitions (id/title/enabled)
-    customSections:    templateCustomSections,
+    // ← Array enriched with content per section (works with legacy + new)
+    customSections:    enrichedCustomSections,
     fullPlanSnapshots,
     planNames,
-    // ← All dynamic per-report content goes inside reportContent
+    // ← Top-level for legacy components
+    planningImages:    planningImages || [],
+    planningObservations: planningObservations || null,
+    // ← Nested for new components
     reportContent: {
       planningImages:        planningImages || [],
       planningObservations:  planningObservations || null,
