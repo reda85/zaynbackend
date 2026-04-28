@@ -31,7 +31,8 @@ import { worker, pdfProcessingQueue } from "./queues/pdfProcessingQueue.js";
 // We must explicitly register the fonts we use in fillText calls.
 // ========================================================================================
 import { GlobalFonts } from "@napi-rs/canvas";
-
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 try {
   const fontPath = path.join(__dirname, 'fonts', 'Inter-Bold.woff');
   // @napi-rs/canvas accepts ttf/otf/woff/woff2 — but woff/woff2 support varies by version.
@@ -55,8 +56,7 @@ try {
   console.error('Font registration failed:', e.message);
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+
 
 const execAsync = promisify(execCallback);
 
