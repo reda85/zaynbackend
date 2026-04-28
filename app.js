@@ -377,38 +377,71 @@ async function cropZoomRobust(pdfImg, xNorm, yNorm, size = 800) {
 
 async function renderFullPlanSnapshot(pdfImg, pins) {
   const { canvas, width, height } = pdfImg;
+
   const out = createCanvas(width, height);
   const ctx = out.getContext("2d");
+
+  // Draw the full plan at native resolution
   ctx.drawImage(canvas, 0, 0);
-  const PIN_RADIUS = Math.max(14, width * 0.014);
-  const FONT_SIZE  = Math.max(10, PIN_RADIUS * 0.75);
+
+  const PIN_RADIUS = Math.max(18, width * 0.018);   // bigger pins
+  const FONT_SIZE  = Math.max(14, PIN_RADIUS * 0.95); // bigger text relative to pin
   const BORDER     = Math.max(3,  PIN_RADIUS * 0.3);
+
+  // ── Pass 1: draw white rings (with shadow) ──────────────────────────────
   pins.forEach((pin) => {
     if (pin.x === undefined || pin.y === undefined) return;
     const cx = pin.x * width;
     const cy = pin.y * height;
-    const label = String(pin._reportIndex + 1);
-    ctx.shadowColor = "rgba(0,0,0,0.4)";
-    ctx.shadowBlur = PIN_RADIUS * 0.8;
+
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.45)";
+    ctx.shadowBlur  = PIN_RADIUS * 0.8;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 1;
+
     ctx.beginPath();
     ctx.arc(cx, cy, PIN_RADIUS + BORDER, 0, Math.PI * 2);
     ctx.fillStyle = "white";
     ctx.fill();
-    ctx.shadowBlur = 0;
+    ctx.restore();
+  });
+
+  // ── Pass 2: red dot + number, with NO shadow whatsoever ────────────────
+  pins.forEach((pin) => {
+    if (pin.x === undefined || pin.y === undefined) return;
+    const cx = pin.x * width;
+    const cy = pin.y * height;
+
+    // Robust label: fall back to original index if _reportIndex is missing
+    const reportIdx = typeof pin._reportIndex === 'number' ? pin._reportIndex : 0;
+    const label = String(reportIdx + 1);
+
+    ctx.save();
+    // Explicitly disable any inherited shadow state
+    ctx.shadowColor   = "transparent";
+    ctx.shadowBlur    = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+
+    // Red disc
     ctx.beginPath();
     ctx.arc(cx, cy, PIN_RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = "#E53E3E";
     ctx.fill();
-    ctx.font = `bold ${FONT_SIZE}px Arial`;
-    ctx.textAlign = "center";
+
+    // Number — try multiple font fallbacks
+    ctx.font = `bold ${FONT_SIZE}px Helvetica, Arial, sans-serif`;
+    ctx.textAlign    = "center";
     ctx.textBaseline = "middle";
-    ctx.fillStyle = "white";
+    ctx.fillStyle    = "#FFFFFF";
     ctx.fillText(label, cx, cy);
+    ctx.restore();
   });
+
   const buffer = out.toBuffer("image/png", { compressionLevel: 3 });
   return "data:image/png;base64," + buffer.toString("base64");
 }
-
 // ========================================================================================
 // REPORT ENDPOINT — uploads PDF to Storage, returns signed URL
 // ========================================================================================
