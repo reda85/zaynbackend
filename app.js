@@ -25,6 +25,35 @@ import uploadRoutes from "./routes/upload.js";
 import tilesRoutes from "./routes/tiles.js";
 import updatePlanRouter from "./routes/update-plan.js";
 import { worker, pdfProcessingQueue } from "./queues/pdfProcessingQueue.js";
+// ========================================================================================
+// CANVAS FONT REGISTRATION
+// @napi-rs/canvas does NOT use system fonts on Linux by default.
+// We must explicitly register the fonts we use in fillText calls.
+// ========================================================================================
+import { GlobalFonts } from "@napi-rs/canvas";
+
+try {
+  const fontPath = path.join(__dirname, 'fonts', 'Inter-Bold.woff');
+  // @napi-rs/canvas accepts ttf/otf/woff/woff2 — but woff/woff2 support varies by version.
+  // If Inter-Bold.woff doesn't load, fall back to a TTF.
+  if (fs.existsSync(fontPath)) {
+    GlobalFonts.registerFromPath(fontPath, 'Inter');
+    console.log(`✅ Canvas font registered: Inter (${fontPath})`);
+  } else {
+    console.warn(`⚠️  Inter-Bold.woff not found at ${fontPath}`);
+  }
+
+  // Also try TTF if available — TTF is more reliable than WOFF for @napi-rs/canvas
+  const ttfPath = path.join(__dirname, 'fonts', 'Inter-Bold.ttf');
+  if (fs.existsSync(ttfPath)) {
+    GlobalFonts.registerFromPath(ttfPath, 'Inter');
+    console.log(`✅ Canvas font registered (TTF): Inter (${ttfPath})`);
+  }
+
+  console.log(`📋 Available canvas fonts: ${GlobalFonts.families.map(f => f.family).join(', ')}`);
+} catch (e) {
+  console.error('Font registration failed:', e.message);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -337,7 +366,7 @@ async function cropZoom(pdfImg, xNorm, yNorm, size = 800) {
     ctx.fillStyle = "#f0f0f0";
     ctx.fillRect(0, 0, size, size);
     ctx.fillStyle = "red";
-    ctx.font = "20px Arial";
+    ctx.font = `bold ${FONT_SIZE}px Inter`;
     ctx.fillText("Error rendering", 10, 30);
   }
   ctx.imageSmoothingEnabled = true;
