@@ -10,7 +10,7 @@ import React from "react";
 import { renderToStream } from "@react-pdf/renderer";
 import path from "path";
 import { fileURLToPath } from "url";
-import { Expo } from "expo-server-sdk";        // ← replaces firebase-admin
+import { Expo } from "expo-server-sdk";
 import { execSync } from "child_process";
 import multer from "multer";
 import fs from "fs-extra";
@@ -26,13 +26,8 @@ import tilesRoutes from "./routes/tiles.js";
 import updatePlanRouter from "./routes/update-plan.js";
 import { worker, pdfProcessingQueue } from "./queues/pdfProcessingQueue.js";
 
-
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Serve fonts statically
-
 
 const execAsync = promisify(execCallback);
 
@@ -41,23 +36,11 @@ console.log("QPDF VERSION:", execSync("qpdf --version").toString());
 const upload = multer({ limits: { fileSize: 50 * 1024 * 1024 } });
 
 // ========================================================================================
-// EXPO PUSH NOTIFICATIONS — replaces Firebase Admin SDK entirely
-// No credentials needed: Expo's push API is authenticated via the push token itself.
+// EXPO PUSH NOTIFICATIONS
 // ========================================================================================
 const expo = new Expo();
 
-/**
- * Send push notifications via Expo Push API.
- * Handles validation, chunking (max ~100/request), and dead-token cleanup automatically.
- *
- * @param {string[]} pushTokens  - Array of ExponentPushToken[...] strings
- * @param {string}   title
- * @param {string}   body
- * @param {object}   data        - Extra payload forwarded to the app
- * @returns {{ successCount: number, failureCount: number, deadTokens: string[] }}
- */
 async function sendExpoNotifications(pushTokens, title, body, data = {}) {
-  // Validate tokens upfront — skip any that aren't real Expo push tokens
   const validTokens = pushTokens.filter((token) => {
     if (!Expo.isExpoPushToken(token)) {
       console.warn(`⚠️  Invalid Expo push token, skipping: ${token}`);
@@ -71,14 +54,9 @@ async function sendExpoNotifications(pushTokens, title, body, data = {}) {
   }
 
   const messages = validTokens.map((token) => ({
-    to: token,
-    sound: "default",
-    title,
-    body,
-    data,
+    to: token, sound: "default", title, body, data,
   }));
 
-  // Expo recommends sending in chunks of ~100
   const chunks = expo.chunkPushNotifications(messages);
   const tickets = [];
 
@@ -91,42 +69,28 @@ async function sendExpoNotifications(pushTokens, title, body, data = {}) {
     }
   }
 
-  let successCount = 0;
-  let failureCount = 0;
+  let successCount = 0, failureCount = 0;
   const deadTokens = [];
 
   tickets.forEach((ticket, i) => {
-    if (ticket.status === "ok") {
-      successCount++;
-    } else {
+    if (ticket.status === "ok") successCount++;
+    else {
       failureCount++;
-      console.error(
-        `Expo push error for token ${validTokens[i]}:`,
-        ticket.message,
-        ticket.details
-      );
-      // DeviceNotRegistered = token is expired or app was uninstalled
-      if (ticket.details?.error === "DeviceNotRegistered") {
-        deadTokens.push(validTokens[i]);
-      }
+      console.error(`Expo push error for token ${validTokens[i]}:`, ticket.message, ticket.details);
+      if (ticket.details?.error === "DeviceNotRegistered") deadTokens.push(validTokens[i]);
     }
   });
 
-  // Purge dead tokens from the database so we don't keep hitting them
   if (deadTokens.length > 0) {
     console.log(`🗑  Removing ${deadTokens.length} dead token(s) from DB`);
-    await supabase
-      .from("user_fcm_tokens")
-      .delete()
-      .in("fcm_token", deadTokens);
+    await supabase.from("user_fcm_tokens").delete().in("fcm_token", deadTokens);
   }
 
   return { successCount, failureCount, deadTokens };
 }
 
 // ========================================================================================
-
-// Load PDF component helpers
+// PDF component loaders
 let PdfReportServer = null;
 let MediaComponent = null;
 
@@ -157,92 +121,55 @@ app.use((req, res, next) => {
 });
 
 // ------------------------
-// Supabase client
+// Supabase client (service role — bypasses RLS for backend operations)
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-
 function requireAuth(req, res, next) {
-  const authHeader = req.headers.authorization
- 
+  const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing Authorization header' })
+    return res.status(401).json({ error: 'Missing Authorization header' });
   }
- 
   try {
-    const token = authHeader.slice(7)
-    const payload = jwt.verify(token, process.env.SUPABASE_JWT_SECRET)
-    req.user = { id: payload.sub, email: payload.email }
-    req.token = token   // forwarded to requireProjectMember
-    next()
+    const token = authHeader.slice(7);
+    const payload = jwt.verify(token, process.env.SUPABASE_JWT_SECRET);
+    req.user = { id: payload.sub, email: payload.email };
+    req.token = token;
+    next();
   } catch {
-    res.status(401).json({ error: 'Invalid or expired token' })
+    res.status(401).json({ error: 'Invalid or expired token' });
   }
 }
 
-
-// ── 2. requireProjectMember ───────────────────────────────────────────────────
-// Runs a scoped Supabase client with the USER's token so RLS enforces access.
-// If the user isn't a member of the project, the query returns null → 403.
-//
-// paramPath: where to find the projectId on req
-//   'body.projectId'  → POST /api/report
-//   'query.projectId' → GET  /api/mediareport
- 
 function requireProjectMember(paramPath) {
   return async function (req, res, next) {
-    const projectId = paramPath.split('.').reduce((o, k) => o?.[k], req)
- 
+    const projectId = paramPath.split('.').reduce((o, k) => o?.[k], req);
     if (!projectId) {
-      return res.status(400).json({ error: `Missing projectId (expected at ${paramPath})` })
+      return res.status(400).json({ error: `Missing projectId (expected at ${paramPath})` });
     }
- 
-    // Scoped client — inherits the user's RLS policies
-    const { createClient } = await import('@supabase/supabase-js')
+    const { createClient } = await import('@supabase/supabase-js');
     const userClient = createClient(
       process.env.SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,          // anon key + user token = RLS-scoped
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
       { global: { headers: { Authorization: `Bearer ${req.token}` } } }
-    )
- 
-    // members_organizations links users to orgs; projects belong to orgs.
-    // If RLS blocks this user from seeing this project → data is null → 403.
-    const { data } = await userClient
-      .from('projects')
-      .select('id')
-      .eq('id', projectId)
-      .maybeSingle()
- 
-    if (!data) {
-      return res.status(403).json({ error: 'Access denied: not a member of this project' })
-    }
- 
-    next()
-  }
+    );
+    const { data } = await userClient.from('projects').select('id').eq('id', projectId).maybeSingle();
+    if (!data) return res.status(403).json({ error: 'Access denied: not a member of this project' });
+    next();
+  };
 }
- 
-// ── 3. requireSelf ────────────────────────────────────────────────────────────
-// Ensures the authenticated user can only touch their own resources.
-// E.g. registering or deleting their own push token.
- 
+
 function requireSelf(paramPath) {
   return function (req, res, next) {
-    const targetUserId = paramPath.split('.').reduce((o, k) => o?.[k], req)
- 
-    if (!targetUserId) {
-      return res.status(400).json({ error: `Missing userId (expected at ${paramPath})` })
-    }
- 
-    if (req.user.id !== targetUserId) {
-      return res.status(403).json({ error: 'Access denied: cannot act on behalf of another user' })
-    }
- 
-    next()
-  }
+    const targetUserId = paramPath.split('.').reduce((o, k) => o?.[k], req);
+    if (!targetUserId) return res.status(400).json({ error: `Missing userId (expected at ${paramPath})` });
+    if (req.user.id !== targetUserId) return res.status(403).json({ error: 'Access denied' });
+    next();
+  };
 }
- 
+
 // ------------------------
 // PDF.js setup
 const pdfjsLib = await (async () => {
@@ -255,8 +182,6 @@ const pdfjsLib = await (async () => {
     throw new Error("Please install pdfjs-dist: npm install pdfjs-dist@3.11.174");
   }
 })();
-
-
 
 const { createRequire } = await import("module");
 const require = createRequire(import.meta.url);
@@ -273,18 +198,18 @@ try {
 // Routes
 app.use("/api/upload-pdf", uploadRoutes);
 app.use("/api/tiles", tilesRoutes);
-//const updatePlanRouter = require('./routes/update-plan')
 app.use('/api/update-plan', updatePlanRouter);
 app.use('/fonts', (req, res, next) => {
-  if (req.path.endsWith('.woff'))  res.setHeader('Content-Type', 'font/woff')
-  if (req.path.endsWith('.woff2')) res.setHeader('Content-Type', 'font/woff2')
-  if (req.path.endsWith('.ttf'))   res.setHeader('Content-Type', 'font/ttf')
-  next()
-}, express.static(path.join(__dirname, 'fonts')))
+  if (req.path.endsWith('.woff'))  res.setHeader('Content-Type', 'font/woff');
+  if (req.path.endsWith('.woff2')) res.setHeader('Content-Type', 'font/woff2');
+  if (req.path.endsWith('.ttf'))   res.setHeader('Content-Type', 'font/ttf');
+  next();
+}, express.static(path.join(__dirname, 'fonts')));
+
 app.get('/api/test-font', (req, res) => {
-  const p = path.join(__dirname, 'fonts', 'Lato-Regular.ttf')
-  res.json({ path: p, exists: fs.existsSync(p) })
-})
+  const p = path.join(__dirname, 'fonts', 'Lato-Regular.ttf');
+  res.json({ path: p, exists: fs.existsSync(p) });
+});
 console.log("🔄 PDF Processing Worker started");
 
 // Bull Board
@@ -315,39 +240,25 @@ class SafeCanvasFactory {
 }
 
 async function renderPdfPage(pdfBuffer, scale = 2.5) {
-  let loadingTask = null;
-  let pdf = null;
-  let page = null;
-
+  let loadingTask = null, pdf = null, page = null;
   try {
     loadingTask = pdfjsLib.getDocument({
       data: new Uint8Array(pdfBuffer),
-      useSystemFonts: false,
-      disableFontFace: true,
-      verbosity: 0,
+      useSystemFonts: false, disableFontFace: true, verbosity: 0,
     });
-
     pdf = await loadingTask.promise;
     page = await pdf.getPage(1);
     const viewport = page.getViewport({ scale });
     const canvasFactory = new SafeCanvasFactory();
     const { canvas, context } = canvasFactory.create(viewport.width, viewport.height);
-
     context.fillStyle = "#FFFFFF";
     context.fillRect(0, 0, viewport.width, viewport.height);
-
     const renderTask = page.render({
-      canvasContext: context,
-      viewport,
-      canvasFactory,
-      intent: "display",
-      annotationMode: 0,
-      renderInteractiveForms: false,
+      canvasContext: context, viewport, canvasFactory,
+      intent: "display", annotationMode: 0, renderInteractiveForms: false,
     });
     await renderTask.promise;
-
     const result = { canvas, width: viewport.width, height: viewport.height };
-
     setTimeout(async () => {
       try {
         if (page) page.cleanup().catch(() => {});
@@ -355,7 +266,6 @@ async function renderPdfPage(pdfBuffer, scale = 2.5) {
         if (loadingTask) loadingTask.destroy().catch(() => {});
       } catch (e) { /* ignore */ }
     }, 100);
-
     return result;
   } catch (error) {
     throw error;
@@ -364,36 +274,26 @@ async function renderPdfPage(pdfBuffer, scale = 2.5) {
 
 async function renderPdfPageRobust(pdfBuffer, scale = 2.5) {
   const tmpDir = path.join(os.tmpdir(), `pdf-render-${crypto.randomUUID()}`);
-
   try {
     await fs.ensureDir(tmpDir);
     const pdfPath = path.join(tmpDir, "input.pdf");
     await fs.writeFile(pdfPath, pdfBuffer);
-
     const dpi = Math.floor(72 * scale);
     const outputPath = path.join(tmpDir, "output.png");
     const gsCommand = process.platform === "win32" ? "gswin64c" : "gs";
-
     const cmd = `${gsCommand} -dSAFER -dBATCH -dNOPAUSE -dQUIET \
-      -sDEVICE=png16m \
-      -r${dpi} \
-      -dFirstPage=1 -dLastPage=1 \
+      -sDEVICE=png16m -r${dpi} -dFirstPage=1 -dLastPage=1 \
       -dTextAlphaBits=4 -dGraphicsAlphaBits=4 \
-      -sOutputFile="${outputPath}" \
-      "${pdfPath}"`;
-
+      -sOutputFile="${outputPath}" "${pdfPath}"`;
     await execAsync(cmd);
-
     const pngBuffer = await fs.readFile(outputPath);
     const sharp = (await import("sharp")).default;
     const { data, info } = await sharp(pngBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-
     const canvas = createCanvas(info.width, info.height);
     const ctx = canvas.getContext("2d");
     const imageData = ctx.createImageData(info.width, info.height);
     for (let i = 0; i < data.length; i++) imageData.data[i] = data[i];
     ctx.putImageData(imageData, 0, 0);
-
     await fs.remove(tmpDir);
     return { canvas, width: info.width, height: info.height };
   } catch (error) {
@@ -421,19 +321,15 @@ async function cropZoom(pdfImg, xNorm, yNorm, size = 800) {
   const { canvas, width, height } = pdfImg;
   const x = Math.floor(xNorm * width);
   const y = Math.floor(yNorm * height);
-
   const out = createCanvas(size, size);
   const ctx = out.getContext("2d", { alpha: false, antialias: "subpixel" });
   ctx.imageSmoothingEnabled = false;
-
   const cropX = Math.max(0, Math.min(x - size / 2, width - size));
   const cropY = Math.max(0, Math.min(y - size / 2, height - size));
   const cropWidth = Math.min(size, width - cropX);
   const cropHeight = Math.min(size, height - cropY);
-
   ctx.fillStyle = "#FFFFFF";
   ctx.fillRect(0, 0, size, size);
-
   try {
     ctx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
   } catch (error) {
@@ -444,10 +340,8 @@ async function cropZoom(pdfImg, xNorm, yNorm, size = 800) {
     ctx.font = "20px Arial";
     ctx.fillText("Error rendering", 10, 30);
   }
-
   ctx.imageSmoothingEnabled = true;
   drawPinDot(ctx, size);
-
   const buffer = out.toBuffer("image/png", { compressionLevel: 3, filters: canvas.PNG_FILTER_NONE });
   return "data:image/png;base64," + buffer.toString("base64");
 }
@@ -456,19 +350,15 @@ async function cropZoomRobust(pdfImg, xNorm, yNorm, size = 800) {
   const { canvas, width, height } = pdfImg;
   const x = Math.floor(xNorm * width);
   const y = Math.floor(yNorm * height);
-
   const out = createCanvas(size, size);
   const ctx = out.getContext("2d");
-
   const cropX = Math.max(0, Math.min(x - size / 2, width - size));
   const cropY = Math.max(0, Math.min(y - size / 2, height - size));
   const cropWidth = Math.min(size, width - cropX);
   const cropHeight = Math.min(size, height - cropY);
-
   ctx.fillStyle = "#FFFFFF";
   ctx.fillRect(0, 0, size, size);
   ctx.imageSmoothingEnabled = false;
-
   try {
     ctx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
   } catch (error) {
@@ -479,410 +369,408 @@ async function cropZoomRobust(pdfImg, xNorm, yNorm, size = 800) {
     ctx.font = "20px Arial";
     ctx.fillText("Rendering Error", 10, 30);
   }
-
   ctx.imageSmoothingEnabled = true;
   drawPinDot(ctx, size);
-
   const buffer = out.toBuffer("image/png", { compressionLevel: 3, filters: canvas.PNG_FILTER_NONE });
   return "data:image/png;base64," + buffer.toString("base64");
 }
 
-// ========================================================================================
-// FULL PLAN SNAPSHOT — whole plan with all pins labeled
-// ========================================================================================
-
 async function renderFullPlanSnapshot(pdfImg, pins) {
   const { canvas, width, height } = pdfImg;
-
   const out = createCanvas(width, height);
   const ctx = out.getContext("2d");
-
-  // Draw the full plan at native resolution
   ctx.drawImage(canvas, 0, 0);
-
   const PIN_RADIUS = Math.max(14, width * 0.014);
   const FONT_SIZE  = Math.max(10, PIN_RADIUS * 0.75);
   const BORDER     = Math.max(3,  PIN_RADIUS * 0.3);
-
   pins.forEach((pin) => {
     if (pin.x === undefined || pin.y === undefined) return;
-
     const cx = pin.x * width;
     const cy = pin.y * height;
     const label = String(pin._reportIndex + 1);
-
-    // Shadow for readability on any background
     ctx.shadowColor = "rgba(0,0,0,0.4)";
     ctx.shadowBlur = PIN_RADIUS * 0.8;
-
-    // White ring
     ctx.beginPath();
     ctx.arc(cx, cy, PIN_RADIUS + BORDER, 0, Math.PI * 2);
     ctx.fillStyle = "white";
     ctx.fill();
-
     ctx.shadowBlur = 0;
-
-    // Red fill
     ctx.beginPath();
     ctx.arc(cx, cy, PIN_RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = "#E53E3E";
     ctx.fill();
-
-    // Number
     ctx.font = `bold ${FONT_SIZE}px Arial`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillStyle = "white";
     ctx.fillText(label, cx, cy);
   });
-
   const buffer = out.toBuffer("image/png", { compressionLevel: 3 });
   return "data:image/png;base64," + buffer.toString("base64");
 }
+
 // ========================================================================================
-// REPORT ENDPOINTS
+// REPORT ENDPOINT — uploads PDF to Storage, returns signed URL
 // ========================================================================================
 
 app.post("/api/report",
   requireAuth,
-  requireProjectMember('body.projectId'), async (req, res) => {
-  console.log("POST /api/report");
-  const startTime = Date.now();
+  requireProjectMember('body.projectId'),
+  async (req, res) => {
+    console.log("POST /api/report");
+    const startTime = Date.now();
 
-  try {
-    const { projectId, selectedIds, fields, displayMode, templateConfig, reportTitle, participants, planningImages, planningObservations, customSections } = req.body;
+    try {
+      const {
+        projectId, selectedIds, fields, displayMode, templateConfig,
+        reportTitle, participants, planningImages, planningObservations, customSections,
+      } = req.body;
 
-    if (!projectId || !selectedIds) {
-      return res.status(400).json({ error: "Missing required parameters: projectId and selectedIds" });
-    }
+      if (!projectId || !selectedIds) {
+        return res.status(400).json({ error: "Missing required parameters: projectId and selectedIds" });
+      }
 
-    
+      const ids = selectedIds;
+      console.log(`\n${"=".repeat(80)}`);
+      console.log(`📊 REPORT GENERATION STARTED — Project: ${projectId}, Pins: ${ids.length}`);
+      console.log(`${"=".repeat(80)}\n`);
+      console.log("⏳ Step 1/5: Fetching data from database...");
 
-    const ids = selectedIds;
-    console.log(`\n${"=".repeat(80)}`);
-    console.log(`📊 REPORT GENERATION STARTED — Project: ${projectId}, Pins: ${ids.length}`);
-    console.log(`${"=".repeat(80)}\n`);
+      const [pinsResult, categoriesResult, statusesResult, projectResult] = await Promise.all([
+        supabase
+          .from("pdf_pins")
+          .select(`*, categories(*), Status(*), assigned_to(*), created_by(*), projects(*), pins_photos(*), plans(file_url), comments(*, username, created_at)`)
+          .eq("project_id", projectId)
+          .in("id", ids),
+        supabase.from("categories").select("*"),
+        supabase.from("Status").select("*"),
+        supabase.from("projects").select("*,organizations(*)").eq("id", projectId).single(),
+      ]);
 
-    console.log("⏳ Step 1/4: Fetching data from database...");
+      if (pinsResult.error) throw pinsResult.error;
+      if (categoriesResult.error) throw categoriesResult.error;
+      if (statusesResult.error) throw statusesResult.error;
+      if (projectResult.error) throw projectResult.error;
 
-    const [pinsResult, categoriesResult, statusesResult, projectResult] = await Promise.all([
-      supabase
-        .from("pdf_pins")
-        .select(`*, categories(*), Status(*), assigned_to(*), created_by(*), projects(*), pins_photos(*), plans(file_url), comments(*, username, created_at)`)
-        .eq("project_id", projectId)
-        .in("id", ids),
-      supabase.from("categories").select("*"),
-      supabase.from("Status").select("*"),
-      supabase.from("projects").select("*,organizations(*)").eq("id", projectId).single(),
-    ]);
+      const pins = pinsResult.data;
+      const categories = categoriesResult.data;
+      const statuses = statusesResult.data;
+      const project = projectResult.data;
 
-    if (pinsResult.error) throw pinsResult.error;
-    if (categoriesResult.error) throw categoriesResult.error;
-    if (statusesResult.error) throw statusesResult.error;
-    if (projectResult.error) throw projectResult.error;
+      if (!pins || pins.length === 0) throw new Error("No pins found for the given criteria");
 
-    const pins = pinsResult.data;
-    const categories = categoriesResult.data;
-    const statuses = statusesResult.data;
-    const project = projectResult.data;
+      console.log(`✅ Data fetched: ${pins.length} pins\n`);
+      console.log("⏳ Step 2/5: Processing PDFs...");
 
-    if (!pins || pins.length === 0) throw new Error("No pins found for the given criteria");
+      const pdfCache = new Map();
+      const pinsByPdf = new Map();
 
-    console.log(`✅ Data fetched: ${pins.length} pins\n`);
-    console.log("⏳ Step 2/4: Processing PDFs...");
+      for (const pin of pins) {
+        const filePath = pin.plans?.file_url;
+        if (!filePath) continue;
+        const pdfUrl = supabase.storage.from("project-plans").getPublicUrl(filePath).data.publicUrl;
+        if (!pinsByPdf.has(pdfUrl)) pinsByPdf.set(pdfUrl, []);
+        pinsByPdf.get(pdfUrl).push(pin);
+      }
 
-    const pdfCache = new Map();
-    const pinsByPdf = new Map();
+      const BATCH_SIZE = 3;
+      const pdfUrls = Array.from(pinsByPdf.keys());
 
-    for (const pin of pins) {
-      const filePath = pin.plans?.file_url;
-      if (!filePath) continue;
-      const pdfUrl = supabase.storage.from("project-plans").getPublicUrl(filePath).data.publicUrl;
-      if (!pinsByPdf.has(pdfUrl)) pinsByPdf.set(pdfUrl, []);
-      pinsByPdf.get(pdfUrl).push(pin);
-    }
+      for (let i = 0; i < pdfUrls.length; i += BATCH_SIZE) {
+        const batch = pdfUrls.slice(i, i + BATCH_SIZE);
+        await Promise.all(
+          batch.map(async (pdfUrl) => {
+            try {
+              const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000, maxContentLength: 50 * 1024 * 1024 });
+              const pdfBuffer = Buffer.from(pdfResponse.data);
+              const pdfImg = await renderPdfPageRobust(pdfBuffer, 2.5);
+              pdfCache.set(pdfUrl, pdfImg);
+            } catch (error) {
+              console.error(`   ❌ Failed to process PDF ${pdfUrl}:`, error.message);
+              pdfCache.set(pdfUrl, null);
+            }
+          })
+        );
+      }
 
-    const BATCH_SIZE = 3;
-    const pdfUrls = Array.from(pinsByPdf.keys());
+      console.log(`✅ PDFs processed: ${pdfCache.size} cached\n`);
+      console.log("⏳ Step 3/5: Creating snapshots...");
 
-    for (let i = 0; i < pdfUrls.length; i += BATCH_SIZE) {
-      const batch = pdfUrls.slice(i, i + BATCH_SIZE);
-      await Promise.all(
-        batch.map(async (pdfUrl) => {
+      const preparedPins = await Promise.all(
+        pins.map(async (pin) => {
+          const filePath = pin.plans?.file_url;
+          if (!filePath) return { ...pin, snapshot: null };
+          const pdfUrl = supabase.storage.from("project-plans").getPublicUrl(filePath).data.publicUrl;
+          const pdfImg = pdfCache.get(pdfUrl);
+          if (!pdfImg || pin.x === undefined || pin.y === undefined) return { ...pin, snapshot: null };
           try {
-            const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000, maxContentLength: 50 * 1024 * 1024 });
-            const pdfBuffer = Buffer.from(pdfResponse.data);
-            const pdfImg = await renderPdfPageRobust(pdfBuffer, 2.5);
-            pdfCache.set(pdfUrl, pdfImg);
+            const snapshot = await cropZoomRobust(pdfImg, pin.x, pin.y, 800);
+            return { ...pin, snapshot };
           } catch (error) {
-            console.error(`   ❌ Failed to process PDF ${pdfUrl}:`, error.message);
-            pdfCache.set(pdfUrl, null);
+            console.error(`   ❌ Pin ${pin.id}: Snapshot failed -`, error.message);
+            return { ...pin, snapshot: null };
           }
         })
       );
-    }
 
-    console.log(`✅ PDFs processed: ${pdfCache.size} cached\n`);
-    console.log("⏳ Step 3/4: Creating snapshots...");
+      console.log(`✅ Snapshots: ${preparedPins.filter((p) => p.snapshot).length}/${pins.length}\n`);
+      console.log("⏳ Step 3b/5: Building full-plan overview snapshots...");
 
-    const preparedPins = await Promise.all(
-      pins.map(async (pin, index) => {
+      const pinsByPdfUrl = new Map();
+      for (let i = 0; i < preparedPins.length; i++) {
+        const pin = preparedPins[i];
         const filePath = pin.plans?.file_url;
-        if (!filePath) return { ...pin, snapshot: null };
-
+        if (!filePath) continue;
         const pdfUrl = supabase.storage.from("project-plans").getPublicUrl(filePath).data.publicUrl;
+        if (!pinsByPdfUrl.has(pdfUrl)) pinsByPdfUrl.set(pdfUrl, []);
+        pinsByPdfUrl.get(pdfUrl).push({ ...pin, _reportIndex: i });
+      }
+
+      const fullPlanSnapshots = {};
+      for (const [pdfUrl, pinsOnPlan] of pinsByPdfUrl.entries()) {
         const pdfImg = pdfCache.get(pdfUrl);
-
-        if (!pdfImg || pin.x === undefined || pin.y === undefined) return { ...pin, snapshot: null };
-
+        if (!pdfImg) continue;
         try {
-          const snapshot = await cropZoomRobust(pdfImg, pin.x, pin.y, 800);
-          return { ...pin, snapshot };
-        } catch (error) {
-          console.error(`   ❌ Pin ${pin.id}: Snapshot failed -`, error.message);
-          return { ...pin, snapshot: null };
+          const fileUrl = pinsOnPlan[0].plans.file_url;
+          fullPlanSnapshots[fileUrl] = await renderFullPlanSnapshot(pdfImg, pinsOnPlan);
+        } catch (err) {
+          console.error(`Full-plan snapshot failed for ${pdfUrl}:`, err.message);
         }
-      })
-    );
+      }
 
-   console.log(`✅ Snapshots: ${preparedPins.filter((p) => p.snapshot).length}/${pins.length}\n`);
-console.log("⏳ Step 3b/4: Building full-plan overview snapshots...");
+      const planNames = {};
+      for (const pin of preparedPins) {
+        if (pin.plans?.file_url && pin.pdf_name) {
+          planNames[pin.plans.file_url] = pin.pdf_name;
+        }
+      }
 
-// Group preparedPins by plan file URL, preserving report order (index)
-const pinsByPdfUrl = new Map();
-for (let i = 0; i < preparedPins.length; i++) {
-  const pin = preparedPins[i];
-  const filePath = pin.plans?.file_url;
-  if (!filePath) continue;
-  const pdfUrl = supabase.storage.from("project-plans").getPublicUrl(filePath).data.publicUrl;
-  if (!pinsByPdfUrl.has(pdfUrl)) pinsByPdfUrl.set(pdfUrl, []);
-  pinsByPdfUrl.get(pdfUrl).push({ ...pin, _reportIndex: i });
-}
+      console.log(`✅ Full-plan snapshots: ${Object.keys(fullPlanSnapshots).length} plan(s)\n`);
+      console.log("⏳ Step 4/5: Generating PDF report...");
 
-// One full-plan snapshot per unique PDF — all its pins overlaid
-const fullPlanSnapshots = {};  // planFileUrl → base64
-for (const [pdfUrl, pinsOnPlan] of pinsByPdfUrl.entries()) {
-  const pdfImg = pdfCache.get(pdfUrl);
-  if (!pdfImg) continue;
-  try {
-    const fileUrl = pinsOnPlan[0].plans.file_url;
-    fullPlanSnapshots[fileUrl] = await renderFullPlanSnapshot(pdfImg, pinsOnPlan);
-  } catch (err) {
-    console.error(`Full-plan snapshot failed for ${pdfUrl}:`, err.message);
-  }
-}
+      const resolvedConfig = templateConfig ? JSON.parse(JSON.stringify(templateConfig)) : {};
+      resolvedConfig.header = resolvedConfig.header || {};
+      resolvedConfig.header.logoUrl       = project?.organizations?.logo_url || '';
+      resolvedConfig.header.clientLogoUrl = project?.client_logo_url         || '';
 
-// Also build a planName map: fileUrl → plan name
-const planNames = {};
-for (const pin of preparedPins) {
-  if (pin.plans?.file_url && pin.pdf_name) {
-    planNames[pin.plans.file_url] = pin.pdf_name;
-  }
-}
+      const finalConfig = reportTitle
+        ? { ...resolvedConfig, reportTitle }
+        : resolvedConfig;
 
-console.log(`✅ Full-plan snapshots: ${Object.keys(fullPlanSnapshots).length} plan(s)\n`);
-console.log("⏳ Step 4/4: Generating PDF report...");
-
-const resolvedConfig = templateConfig ? JSON.parse(JSON.stringify(templateConfig)) : {};
-resolvedConfig.header = resolvedConfig.header || {};
-resolvedConfig.header.logoUrl       = project?.organizations?.logo_url || '';
-resolvedConfig.header.clientLogoUrl = project?.client_logo_url         || '';
-
-const finalConfig = reportTitle
-    ? { ...resolvedConfig, reportTitle }
-    : resolvedConfig;
-
-// ── Normalize customSections from request body ─────────────────────────────────
-// Two formats can arrive:
-//  - Legacy: array [{id, title, enabled, content}, ...] from old clients
-//  - New:    object { [sectionId]: TipTapDoc } from web/mobile current
-let customSectionContents = {};
-
-if (customSections) {
-    if (Array.isArray(customSections)) {
-        customSections.forEach(s => {
+      // ── Normalize customSections (accept array or object form) ──
+      let customSectionContents = {};
+      if (customSections) {
+        if (Array.isArray(customSections)) {
+          customSections.forEach(s => {
             if (s.id != null) customSectionContents[s.id] = s.content;
+          });
+        } else if (typeof customSections === 'object') {
+          customSectionContents = customSections;
+        }
+      }
+
+      const templateCustomSections = finalConfig?.customSections || [];
+      const enrichedCustomSections = templateCustomSections.map(s => ({
+        ...s,
+        content: customSectionContents[s.id] ?? customSectionContents[String(s.id)] ?? null,
+      }));
+
+      const PdfComponent = await loadPdfReportComponent();
+      const pdfStream = await renderToStream(
+        React.createElement(PdfComponent, {
+          selectedPins:      preparedPins,
+          categories:        categories || [],
+          statuses:          statuses || [],
+          fields:            fields || {},
+          displayMode:       displayMode || "list",
+          selectedProject:   project,
+          config:            finalConfig,
+          participants:      participants || [],
+          customSections:    enrichedCustomSections,
+          fullPlanSnapshots,
+          planNames,
+          planningImages:    planningImages || [],
+          planningObservations: planningObservations || null,
+          reportContent: {
+            planningImages:        planningImages || [],
+            planningObservations:  planningObservations || null,
+            customSectionContents,
+          },
+        })
+      );
+
+      // ── Collect stream into a single Buffer ──
+      const chunks = [];
+      for await (const chunk of pdfStream) {
+        chunks.push(chunk);
+      }
+      const pdfBuffer = Buffer.concat(chunks);
+      const pdfSizeMB = (pdfBuffer.length / 1024 / 1024).toFixed(2);
+      console.log(`📦 PDF assembled: ${pdfSizeMB} MB`);
+
+      console.log("⏳ Step 5/5: Uploading PDF to Supabase Storage...");
+
+      const timestamp = Date.now();
+      const safeProjectName = (project?.name || 'projet').replace(/[^a-zA-Z0-9]/g, '_');
+      const fileName = `Rapport_${safeProjectName}_${timestamp}.pdf`;
+      const storagePath = `generated/${projectId}/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('reports')
+        .upload(storagePath, pdfBuffer, {
+          contentType: 'application/pdf',
+          upsert: true,
+          cacheControl: '3600',
         });
-    } else if (typeof customSections === 'object') {
-        customSectionContents = customSections;
-    }
-}
 
-// Build the array form for the PdfReportServer:
-// take template's customSections (the structure: id/title/enabled)
-// and inject the corresponding content into each one.
-const templateCustomSections = finalConfig?.customSections || [];
-const enrichedCustomSections = templateCustomSections.map(s => ({
-    ...s,
-    content: customSectionContents[s.id] ?? customSectionContents[String(s.id)] ?? null,
-}));
+      if (uploadError) {
+        console.error('❌ Upload to storage failed:', uploadError);
+        throw new Error(`Storage upload failed: ${uploadError.message}`);
+      }
 
-// ── DEBUG LOGGING — remove once confirmed working ─────────────────────────────
-console.log('🔍 templateConfig.planning:', JSON.stringify(finalConfig?.planning, null, 2));
-console.log('🔍 templateConfig.sectionOrder:', finalConfig?.sectionOrder);
-console.log('🔍 enrichedCustomSections count:', enrichedCustomSections.length);
-console.log('🔍 enrichedCustomSections sample:', JSON.stringify(enrichedCustomSections[0], null, 2));
-console.log('🔍 planningImages count:', (planningImages || []).length);
-console.log('🔍 planningImages URLs:', planningImages);
-console.log('🔍 planningObservations:', planningObservations ? 'present' : 'null');
-console.log('🔍 customSectionContents keys:', Object.keys(customSectionContents));
+      // ── Generate a 1-hour signed URL ──
+      const { data: signedData, error: signedError } = await supabase.storage
+        .from('reports')
+        .createSignedUrl(storagePath, 3600);
 
-const PdfComponent = await loadPdfReportComponent();
-const pdfStream = await renderToStream(
-  React.createElement(PdfComponent, {
-    selectedPins:      preparedPins,
-    categories:        categories || [],
-    statuses:          statuses || [],
-    fields:            fields || {},
-    displayMode:       displayMode || "list",
-    selectedProject:   project,
-    config:            finalConfig,
-    participants:      participants || [],
-    // ← Array enriched with content per section (works with legacy + new)
-    customSections:    enrichedCustomSections,
-    fullPlanSnapshots,
-    planNames,
-    // ← Top-level for legacy components
-    planningImages:    planningImages || [],
-    planningObservations: planningObservations || null,
-    // ← Nested for new components
-    reportContent: {
-      planningImages:        planningImages || [],
-      planningObservations:  planningObservations || null,
-      customSectionContents,
-    },
-  })
-);
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="report-${projectId}-${Date.now()}.pdf"`);
-    pdfStream.pipe(res);
+      if (signedError) {
+        console.error('❌ Signed URL generation failed:', signedError);
+        throw new Error(`Signed URL failed: ${signedError.message}`);
+      }
 
-    pdfStream.on("end", () => {
       const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-      console.log(`✅ PDF report generated in ${duration}s`);
-    });
+      console.log(`✅ PDF uploaded and signed in ${duration}s — ${storagePath}\n`);
 
-    pdfStream.on("error", (err) => {
-      console.error("❌ PDF stream error:", err);
-      if (!res.headersSent) res.status(500).json({ error: "PDF generation failed" });
-    });
-  } catch (err) {
-    console.error("❌ REPORT GENERATION FAILED:", err.message);
-    if (!res.headersSent) {
-      res.status(500).json({
-        error: err.message || "Internal server error",
-        details: process.env.NODE_ENV === "development" ? err.stack : undefined,
+      res.json({
+        success:     true,
+        downloadUrl: signedData.signedUrl,
+        fileName,
+        fileSize:    pdfBuffer.length,
+        storagePath,
       });
+    } catch (err) {
+      console.error("❌ REPORT GENERATION FAILED:", err.message);
+      if (!res.headersSent) {
+        res.status(500).json({
+          error: err.message || "Internal server error",
+          details: process.env.NODE_ENV === "development" ? err.stack : undefined,
+        });
+      }
     }
-  }
-});
+  });
+
+// ========================================================================================
+// MEDIA REPORT ENDPOINT (also upgraded to upload + signed URL)
+// ========================================================================================
 
 app.get("/api/mediareport",
   requireAuth,
   requireProjectMember('query.projectId'),
-   async (req, res) => {
-  try {
-    const { projectId, selectedIds } = req.query;
+  async (req, res) => {
+    try {
+      const { projectId, selectedIds } = req.query;
+      if (!projectId || !selectedIds) {
+        return res.status(400).json({ error: "Missing required parameters: projectId and selectedIds" });
+      }
 
-    if (!projectId || !selectedIds) {
-      return res.status(400).json({ error: "Missing required parameters: projectId and selectedIds" });
-    }
+      const ids = selectedIds.split(",").map((id) => id.trim());
 
-    const ids = selectedIds.split(",").map((id) => id.trim());
+      const { data: medias, error: mediasError } = await supabase
+        .from("pins_photos")
+        .select(`*, projects(*), pdf_pins(*,projects(*),plans(file_url, name))`)
+        .eq("project_id", projectId)
+        .in("id", ids);
 
-    const { data: medias, error: mediasError } = await supabase
-      .from("pins_photos")
-      .select(`*, projects(*), pdf_pins(*,projects(*),plans(file_url, name))`)
-      .eq("project_id", projectId)
-      .in("id", ids);
+      if (mediasError) throw mediasError;
+      if (!medias || medias.length === 0) throw new Error("No medias found for the given criteria");
 
-    if (mediasError) throw mediasError;
-    if (!medias || medias.length === 0) throw new Error("No medias found for the given criteria");
+      const { data: project, error: projectError } = await supabase
+        .from("projects").select("*").eq("id", projectId).single();
+      if (projectError) throw projectError;
 
-    const { data: project, error: projectError } = await supabase
-      .from("projects")
-      .select("*")
-      .eq("id", projectId)
-      .single();
+      const pdfCache = new Map();
 
-    if (projectError) throw projectError;
-
-    const pdfCache = new Map();
-
-    const preparedMedias = await Promise.all(
-      medias.map(async (media, index) => {
-        const filePath = media.pdf_pins?.plans?.file_url;
-        if (!filePath) return { ...media, snapshot: null };
-
-        const pdfUrl = supabase.storage.from("project-plans").getPublicUrl(filePath).data.publicUrl;
-        let pdfImg = pdfCache.get(pdfUrl);
-
-        if (!pdfImg) {
+      const preparedMedias = await Promise.all(
+        medias.map(async (media) => {
+          const filePath = media.pdf_pins?.plans?.file_url;
+          if (!filePath) return { ...media, snapshot: null };
+          const pdfUrl = supabase.storage.from("project-plans").getPublicUrl(filePath).data.publicUrl;
+          let pdfImg = pdfCache.get(pdfUrl);
+          if (!pdfImg) {
+            try {
+              const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000, maxContentLength: 50 * 1024 * 1024 });
+              pdfImg = await renderPdfPageRobust(Buffer.from(pdfResponse.data));
+              pdfCache.set(pdfUrl, pdfImg);
+            } catch (error) {
+              console.error(`Failed to process PDF for media ${media.id}:`, error.message);
+              return { ...media, snapshot: null };
+            }
+          }
+          if (media.pdf_pins?.x === undefined || media.pdf_pins?.y === undefined) return { ...media, snapshot: null };
           try {
-            const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000, maxContentLength: 50 * 1024 * 1024 });
-            pdfImg = await renderPdfPageRobust(Buffer.from(pdfResponse.data));
-            pdfCache.set(pdfUrl, pdfImg);
+            const snapshot = await cropZoom(pdfImg, media.pdf_pins.x, media.pdf_pins.y, 800);
+            return { ...media, snapshot };
           } catch (error) {
-            console.error(`Failed to process PDF for media ${media.id}:`, error.message);
+            console.error(`Failed to create snapshot for media ${media.id}:`, error.message);
             return { ...media, snapshot: null };
           }
-        }
+        })
+      );
 
-        if (media.pdf_pins?.x === undefined || media.pdf_pins?.y === undefined) return { ...media, snapshot: null };
+      const MediaReportComponent = await loadMediaReportComponent();
+      const pdfStream = await renderToStream(
+        React.createElement(MediaReportComponent, { selectedMedias: preparedMedias, selectedProject: project })
+      );
 
-        try {
-          const snapshot = await cropZoom(pdfImg, media.pdf_pins.x, media.pdf_pins.y, 800);
-          return { ...media, snapshot };
-        } catch (error) {
-          console.error(`Failed to create snapshot for media ${media.id}:`, error.message);
-          return { ...media, snapshot: null };
-        }
-      })
-    );
+      // Collect to buffer + upload (same pattern as /api/report)
+      const chunks = [];
+      for await (const chunk of pdfStream) chunks.push(chunk);
+      const pdfBuffer = Buffer.concat(chunks);
 
-    const MediaReportComponent = await loadMediaReportComponent();
-    const pdfStream = await renderToStream(
-      React.createElement(MediaReportComponent, { selectedMedias: preparedMedias, selectedProject: project })
-    );
+      const timestamp = Date.now();
+      const fileName = `MediaReport_${projectId}_${timestamp}.pdf`;
+      const storagePath = `generated/${projectId}/${fileName}`;
 
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="report-${projectId}.pdf"`);
-    pdfStream.pipe(res);
-    pdfStream.on("end", () => console.log("Media PDF generation completed"));
-    pdfStream.on("error", (err) => {
-      console.error("PDF stream error:", err);
-      if (!res.headersSent) res.status(500).json({ error: "PDF generation failed" });
-    });
-  } catch (err) {
-    console.error("MEDIA REPORT ERROR:", err);
-    if (!res.headersSent) {
-      res.status(500).json({
-        error: err.message || "Internal server error",
-        details: process.env.NODE_ENV === "development" ? err.stack : undefined,
+      const { error: uploadError } = await supabase.storage
+        .from('reports')
+        .upload(storagePath, pdfBuffer, {
+          contentType: 'application/pdf',
+          upsert: true,
+        });
+      if (uploadError) throw new Error(`Storage upload failed: ${uploadError.message}`);
+
+      const { data: signedData, error: signedError } = await supabase.storage
+        .from('reports')
+        .createSignedUrl(storagePath, 3600);
+      if (signedError) throw new Error(`Signed URL failed: ${signedError.message}`);
+
+      res.json({
+        success: true,
+        downloadUrl: signedData.signedUrl,
+        fileName,
+        fileSize: pdfBuffer.length,
+        storagePath,
       });
+    } catch (err) {
+      console.error("MEDIA REPORT ERROR:", err);
+      if (!res.headersSent) {
+        res.status(500).json({
+          error: err.message || "Internal server error",
+          details: process.env.NODE_ENV === "development" ? err.stack : undefined,
+        });
+      }
     }
-  }
-});
+  });
 
 // ========================================================================================
-// PUSH TOKEN MANAGEMENT
+// PUSH TOKEN MANAGEMENT (unchanged)
 // ========================================================================================
 
-// Register / update push token
 app.post("/api/fcm-tokens", async (req, res) => {
   try {
     const { userId, fcmToken, deviceId, deviceType } = req.body;
-
-    if (!userId || !fcmToken) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    // Validate it's a real Expo push token
-    if (!Expo.isExpoPushToken(fcmToken)) {
-      return res.status(400).json({ error: `Invalid Expo push token: ${fcmToken}` });
-    }
-
+    if (!userId || !fcmToken) return res.status(400).json({ error: "Missing required fields" });
+    if (!Expo.isExpoPushToken(fcmToken)) return res.status(400).json({ error: `Invalid Expo push token: ${fcmToken}` });
     const { data, error } = await supabase
       .from("user_fcm_tokens")
       .upsert(
@@ -890,9 +778,7 @@ app.post("/api/fcm-tokens", async (req, res) => {
         { onConflict: "user_id,device_id" }
       )
       .select();
-
     if (error) throw error;
-
     res.json({ success: true, message: "Push token saved", data });
   } catch (error) {
     console.error("Error saving push token:", error);
@@ -900,18 +786,11 @@ app.post("/api/fcm-tokens", async (req, res) => {
   }
 });
 
-// Unregister push token on logout
 app.delete("/api/fcm-tokens/:userId/:deviceId", async (req, res) => {
   try {
     const { userId, deviceId } = req.params;
-
-    const { error } = await supabase
-      .from("user_fcm_tokens")
-      .delete()
-      .match({ user_id: userId, device_id: deviceId });
-
+    const { error } = await supabase.from("user_fcm_tokens").delete().match({ user_id: userId, device_id: deviceId });
     if (error) throw error;
-
     res.json({ success: true, message: "Push token deleted" });
   } catch (error) {
     console.error("Error deleting push token:", error);
@@ -919,25 +798,12 @@ app.delete("/api/fcm-tokens/:userId/:deviceId", async (req, res) => {
   }
 });
 
-// ========================================================================================
-// NOTIFICATION SENDING ENDPOINTS
-// ========================================================================================
-
-// Send to a single user (all their devices)
 app.post("/api/notifications/send-to-user", async (req, res) => {
   try {
     const { userId, title, body, data } = req.body;
-
-    const { data: tokens, error } = await supabase
-      .from("user_fcm_tokens")
-      .select("fcm_token")
-      .eq("user_id", userId);
-
+    const { data: tokens, error } = await supabase.from("user_fcm_tokens").select("fcm_token").eq("user_id", userId);
     if (error) throw error;
-    if (!tokens || tokens.length === 0) {
-      return res.status(404).json({ error: "No push tokens found for user" });
-    }
-
+    if (!tokens || tokens.length === 0) return res.status(404).json({ error: "No push tokens found for user" });
     const result = await sendExpoNotifications(tokens.map((t) => t.fcm_token), title, body, data || {});
     res.json({ success: true, ...result });
   } catch (error) {
@@ -946,20 +812,13 @@ app.post("/api/notifications/send-to-user", async (req, res) => {
   }
 });
 
-// Assign pin and notify
 app.post("/api/pins/assign", async (req, res) => {
   console.log("Assigning pin...");
   try {
     const { pinId, assignedToUserId, assignedByName } = req.body;
-
     const { data: tokens, error: tokensError } = await supabase
-      .from("user_fcm_tokens")
-      .select("fcm_token")
-      .eq("user_id", assignedToUserId);
-
+      .from("user_fcm_tokens").select("fcm_token").eq("user_id", assignedToUserId);
     if (tokensError) throw tokensError;
-    console.log("Retrieved tokens:", tokens);
-
     if (tokens && tokens.length > 0) {
       const result = await sendExpoNotifications(
         tokens.map((t) => t.fcm_token),
@@ -969,7 +828,6 @@ app.post("/api/pins/assign", async (req, res) => {
       );
       console.log("Notification result:", result);
     }
-
     res.json({ success: true, message: "Pin assigned and notification sent", pinId });
   } catch (error) {
     console.error("Error assigning pin:", error);
@@ -977,26 +835,17 @@ app.post("/api/pins/assign", async (req, res) => {
   }
 });
 
-// Assign task and notify
 app.post("/api/tasks/assign", async (req, res) => {
   try {
     const { taskId, taskTitle, assignedToUserId, assignedByName } = req.body;
-
     const { data: task, error: taskError } = await supabase
       .from("tasks")
       .insert({ id: taskId, title: taskTitle, assigned_to: assignedToUserId, assigned_by: assignedByName })
-      .select()
-      .single();
-
+      .select().single();
     if (taskError) throw taskError;
-
     const { data: tokens, error: tokensError } = await supabase
-      .from("user_fcm_tokens")
-      .select("fcm_token")
-      .eq("user_id", assignedToUserId);
-
+      .from("user_fcm_tokens").select("fcm_token").eq("user_id", assignedToUserId);
     if (tokensError) throw tokensError;
-
     if (tokens && tokens.length > 0) {
       const result = await sendExpoNotifications(
         tokens.map((t) => t.fcm_token),
@@ -1006,7 +855,6 @@ app.post("/api/tasks/assign", async (req, res) => {
       );
       console.log(`Task notification: ${result.successCount} sent, ${result.failureCount} failed`);
     }
-
     res.json({ success: true, message: "Task assigned and notification sent", task });
   } catch (error) {
     console.error("Error assigning task:", error);
@@ -1014,21 +862,12 @@ app.post("/api/tasks/assign", async (req, res) => {
   }
 });
 
-// Send to multiple users
 app.post("/api/notifications/send-bulk", async (req, res) => {
   try {
     const { userIds, title, body, data } = req.body;
-
-    const { data: tokens, error } = await supabase
-      .from("user_fcm_tokens")
-      .select("fcm_token")
-      .in("user_id", userIds);
-
+    const { data: tokens, error } = await supabase.from("user_fcm_tokens").select("fcm_token").in("user_id", userIds);
     if (error) throw error;
-    if (!tokens || tokens.length === 0) {
-      return res.status(404).json({ error: "No push tokens found" });
-    }
-
+    if (!tokens || tokens.length === 0) return res.status(404).json({ error: "No push tokens found" });
     const result = await sendExpoNotifications(tokens.map((t) => t.fcm_token), title, body, data || {});
     res.json({ success: true, ...result });
   } catch (error) {
@@ -1037,22 +876,12 @@ app.post("/api/notifications/send-bulk", async (req, res) => {
   }
 });
 
-// Send to a topic (stored as text[] column on user_fcm_tokens)
-// To add the column: ALTER TABLE user_fcm_tokens ADD COLUMN IF NOT EXISTS topics text[] DEFAULT '{}';
 app.post("/api/notifications/send-to-topic", async (req, res) => {
   try {
     const { topic, title, body, data } = req.body;
-
-    const { data: tokens, error } = await supabase
-      .from("user_fcm_tokens")
-      .select("fcm_token")
-      .contains("topics", [topic]);
-
+    const { data: tokens, error } = await supabase.from("user_fcm_tokens").select("fcm_token").contains("topics", [topic]);
     if (error) throw error;
-    if (!tokens || tokens.length === 0) {
-      return res.status(404).json({ error: `No subscribers found for topic: ${topic}` });
-    }
-
+    if (!tokens || tokens.length === 0) return res.status(404).json({ error: `No subscribers found for topic: ${topic}` });
     const result = await sendExpoNotifications(tokens.map((t) => t.fcm_token), title, body, data || {});
     res.json({ success: true, ...result });
   } catch (error) {
@@ -1061,28 +890,11 @@ app.post("/api/notifications/send-to-topic", async (req, res) => {
   }
 });
 
-// Subscribe users to a topic
-// Required Postgres function — run once in Supabase SQL editor:
-//
-//   CREATE OR REPLACE FUNCTION append_topic_to_tokens(p_user_ids uuid[], p_topic text)
-//   RETURNS void AS $$
-//     UPDATE user_fcm_tokens
-//     SET topics = array_append(topics, p_topic)
-//     WHERE user_id = ANY(p_user_ids)
-//       AND NOT (topics @> ARRAY[p_topic]);
-//   $$ LANGUAGE sql;
-//
 app.post("/api/notifications/subscribe-to-topic", async (req, res) => {
   try {
     const { userIds, topic } = req.body;
-
-    const { error } = await supabase.rpc("append_topic_to_tokens", {
-      p_user_ids: userIds,
-      p_topic: topic,
-    });
-
+    const { error } = await supabase.rpc("append_topic_to_tokens", { p_user_ids: userIds, p_topic: topic });
     if (error) throw error;
-
     res.json({ success: true, message: `Subscribed ${userIds.length} user(s) to topic: ${topic}` });
   } catch (error) {
     console.error("Error subscribing to topic:", error);
@@ -1125,33 +937,19 @@ app.get("/", (req, res) => {
 app.get("/api/test-snapshot", async (req, res) => {
   try {
     const { projectId, pinId } = req.query;
-
-    if (!projectId || !pinId) {
-      return res.status(400).json({ error: "Missing required parameters: projectId and pinId" });
-    }
-
+    if (!projectId || !pinId) return res.status(400).json({ error: "Missing required parameters: projectId and pinId" });
     const { data: pin, error } = await supabase
-      .from("pdf_pins")
-      .select(`*, plans(file_url)`)
-      .eq("project_id", projectId)
-      .eq("id", pinId)
-      .single();
-
+      .from("pdf_pins").select(`*, plans(file_url)`).eq("project_id", projectId).eq("id", pinId).single();
     if (error || !pin) return res.status(404).json({ error: "Pin not found" });
-
     const filePath = pin.plans?.file_url;
     if (!filePath) return res.status(400).json({ error: "No PDF file found for this pin" });
-
     const pdfUrl = supabase.storage.from("project-plans").getPublicUrl(filePath).data.publicUrl;
     const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000 });
     const pdfImg = await renderPdfPageRobust(Buffer.from(pdfResponse.data));
-
     if (pin.x === undefined || pin.y === undefined) {
       return res.status(400).json({ error: "Pin missing x or y coordinates", availableFields: Object.keys(pin), pinData: pin });
     }
-
     const snapshot = await cropZoom(pdfImg, pin.x, pin.y, 800);
-
     res.send(`
       <!DOCTYPE html>
       <html>
@@ -1190,4 +988,4 @@ app.listen(PORT, () => {
 });
 
 process.on("SIGTERM", () => { console.log("SIGTERM received"); process.exit(0); });
-process.on("SIGINT", () => { console.log("SIGINT received"); process.exit(0); });
+process.on("SIGINT",  () => { console.log("SIGINT received");  process.exit(0); });
