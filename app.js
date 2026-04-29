@@ -405,6 +405,15 @@ async function cropZoomRobust(pdfImg, xNorm, yNorm, size = 800) {
 }
 
 async function renderFullPlanSnapshot(pdfImg, pins) {
+
+  const testCanvas = createCanvas(200, 50);
+  const testCtx = testCanvas.getContext('2d');
+  
+  for (const fontName of ['Inter', 'Inter SemiBold', 'Noto Sans Mono', 'Nimbus Sans']) {
+    testCtx.font = `30px "${fontName}"`;
+    const m = testCtx.measureText('1');
+    console.log(`🔤 Font "${fontName}" → width of "1": ${m.width.toFixed(2)}`);
+  }
   const { canvas, width, height } = pdfImg;
 
   const out = createCanvas(width, height);
@@ -463,7 +472,7 @@ console.log(`🔤 Has Inter:`, GlobalFonts.has?.('Inter') ?? 'unknown');
     ctx.fill();
 
     // Number — try multiple font fallbacks
-    ctx.font = `bold ${FONT_SIZE}px Helvetica, Arial, sans-serif`;
+    ctx.font = `bold ${FONT_SIZE}px Inter, "Noto Sans Mono", "Nimbus Sans", sans-serif`;
     ctx.textAlign    = "center";
     ctx.textBaseline = "middle";
     ctx.fillStyle    = "#FFFFFF";
