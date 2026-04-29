@@ -366,7 +366,7 @@ async function cropZoom(pdfImg, xNorm, yNorm, size = 800) {
     ctx.fillStyle = "#f0f0f0";
     ctx.fillRect(0, 0, size, size);
     ctx.fillStyle = "red";
-    ctx.font = `bold ${FONT_SIZE}px Inter`;
+    ctx.font = `${FONT_SIZE}px Inter`;
     ctx.fillText("Error rendering", 10, 30);
   }
   ctx.imageSmoothingEnabled = true;
@@ -416,6 +416,9 @@ async function renderFullPlanSnapshot(pdfImg, pins) {
   const PIN_RADIUS = Math.max(18, width * 0.018);   // bigger pins
   const FONT_SIZE  = Math.max(14, PIN_RADIUS * 0.95); // bigger text relative to pin
   const BORDER     = Math.max(3,  PIN_RADIUS * 0.3);
+
+  console.log(`🔤 Canvas fonts available:`, GlobalFonts.families.map(f => f.family).join(', '));
+console.log(`🔤 Has Inter:`, GlobalFonts.has?.('Inter') ?? 'unknown');
 
   // ── Pass 1: draw white rings (with shadow) ──────────────────────────────
   pins.forEach((pin) => {
