@@ -31,6 +31,20 @@ import { worker, pdfProcessingQueue } from "./queues/pdfProcessingQueue.js";
 // We must explicitly register the fonts we use in fillText calls.
 // ========================================================================================
 import { GlobalFonts } from "@napi-rs/canvas";
+
+import sharp from "sharp";
+
+async function optimizePhotoToJpegDataUri(url, { width = 1200, quality = 72 } = {}) {
+  const resp = await axios.get(url, {
+    responseType: "arraybuffer", timeout: 30000, maxContentLength: 50 * 1024 * 1024,
+  });
+  const jpeg = await sharp(Buffer.from(resp.data))
+    .rotate()
+    .resize({ width, fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality, mozjpeg: true })
+    .toBuffer();
+  return "data:image/jpeg;base64," + jpeg.toString("base64");
+}
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 try {
@@ -649,7 +663,23 @@ app.post("/api/report",
         content: customSectionContents[s.id] ?? customSectionContents[String(s.id)] ?? null,
       }));
 
+       const PHOTO_CONCURRENCY = 4;
+const photoTasks = [];
+for (const pin of preparedPins) {
+  for (const photo of pin.pins_photos || []) {
+    if (photo?.public_url && !photo.public_url.startsWith("data:")) photoTasks.push(photo);
+  }
+}
+for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
+  const batch = photoTasks.slice(i, i + PHOTO_CONCURRENCY);
+  await Promise.all(batch.map(async (photo) => {
+    try { photo.public_url = await optimizePhotoToJpegDataUri(photo.public_url); }
+    catch (e) { console.error(`Photo ${photo.id} optimize failed:`, e.message); }
+  }));
+}
       const PdfComponent = await loadPdfReportComponent();
+
+     
       const pdfStream = await renderToStream(
         React.createElement(PdfComponent, {
           selectedPins:      preparedPins,
@@ -790,8 +820,17 @@ app.get("/api/mediareport",
           }
         })
       );
-
+ const PHOTO_CONCURRENCY = 4;
+      for (let i = 0; i < preparedMedias.length; i += PHOTO_CONCURRENCY) {
+        const batch = preparedMedias.slice(i, i + PHOTO_CONCURRENCY);
+        await Promise.all(batch.map(async (media) => {
+          if (!media?.public_url || media.public_url.startsWith("data:")) return;
+          try { media.public_url = await optimizePhotoToJpegDataUri(media.public_url); }
+          catch (e) { console.error(`Media ${media.id} optimize failed:`, e.message); }
+        }));
+      }
       const MediaReportComponent = await loadMediaReportComponent();
+      
       const pdfStream = await renderToStream(
         React.createElement(MediaReportComponent, { selectedMedias: preparedMedias, selectedProject: project })
       );
