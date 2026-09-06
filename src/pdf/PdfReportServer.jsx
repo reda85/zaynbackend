@@ -546,9 +546,20 @@ const PhotoGalleryView = ({ selectedPins, statuses, config, fontFamily }) => {
 //                          qui décalerait le point).
 const LocalizedPhotosView = ({ selectedPins, config, fontFamily, planImagesByPlanId = {}, planDimensionsByPlanId = {} }) => {
   const showTaskName = config?.tasks?.localizedShowTaskName ?? false
-  const planSizeMap  = { small: 90, medium: 120, large: 150 }
-  const planBoxMax   = planSizeMap[config?.tasks?.localizedPlanSize || 'medium']
   const primaryColor = config?.primaryColor || "#44403c"
+
+  // Largeur utile de la page A4 (marges 32pt de chaque côté) — même valeur
+  // que celle utilisée par PhotoGalleryView, pour rester cohérent.
+  const CONTENT_WIDTH = 531
+  const ROW_GAP = 10
+
+  const sizeSetting = config?.tasks?.localizedPlanSize || 'medium'
+  const isXLarge     = sizeSetting === 'xlarge'
+  const planSizeMap  = { small: 90, medium: 120, large: 150 }
+  // En "Très grande", la photo et le plan restent côte à côte mais se
+  // partagent toute la largeur de page à parts égales (chacun ~50%),
+  // au lieu d'une taille fixe.
+  const planBoxMax = isXLarge ? (CONTENT_WIDTH - ROW_GAP) / 2 : (planSizeMap[sizeSetting] ?? 120)
 
   const localizedPhotos = selectedPins.flatMap(pin =>
     (pin.pins_photos || [])
@@ -583,7 +594,7 @@ const LocalizedPhotosView = ({ selectedPins, config, fontFamily, planImagesByPla
             <Text style={{ fontSize: 10, fontWeight: "bold", color: "#292524", marginBottom: 6, fontFamily }}>
               {photo.description || "Sans description"}
             </Text>
-            <View style={{ flexDirection: "row", gap: 10, alignItems: "flex-start" }}>
+            <View style={{ flexDirection: "row", gap: ROW_GAP, alignItems: "flex-start" }}>
               <Image
                 src={photo.public_url}
                 style={{ width: planBoxMax, height: planBoxMax, objectFit: "cover", borderRadius: 4 }}
