@@ -663,6 +663,60 @@ app.post("/api/report",
         content: customSectionContents[s.id] ?? customSectionContents[String(s.id)] ?? null,
       }));
 
+      // ── Step 3c/5: Prepare plan data for "Photos localisées" mode ──────────
+      // For each distinct plan_id referenced by a localized photo (plan_id +
+      // plan_x + plan_y all set on pins_photos), fetch the plan's raw
+      // background image (plans.png_url — NOT the tiled version) and its real
+      // dimensions (plans.width/height). PdfReportServer needs the real
+      // dimensions to size the image box with the exact same aspect ratio,
+      // otherwise the % position of the dot would be thrown off by any
+      // cropping/letterboxing.
+      const effectiveDisplayMode = finalConfig?.tasks?.displayMode || displayMode;
+      let planImagesByPlanId = {};
+      let planDimensionsByPlanId = {};
+
+      if (effectiveDisplayMode === "localizedPhotos") {
+        console.log("⏳ Step 3c/5: Preparing plan data for 'Photos localisées'...");
+
+        const planIds = new Set();
+        for (const pin of preparedPins) {
+          for (const photo of pin.pins_photos || []) {
+            if (photo?.plan_id != null && photo?.plan_x != null && photo?.plan_y != null) {
+              planIds.add(photo.plan_id);
+            }
+          }
+        }
+
+        if (planIds.size > 0) {
+          const { data: plansData, error: plansError } = await supabase
+            .from("plans")
+            .select("id, width, height, png_url")
+            .in("id", Array.from(planIds));
+
+          if (plansError) {
+            console.error("   ❌ Failed to fetch plans for localized photos:", plansError.message);
+          } else {
+            for (const plan of plansData || []) {
+              if (plan.width && plan.height) {
+                planDimensionsByPlanId[plan.id] = { width: plan.width, height: plan.height };
+              }
+              if (plan.png_url) {
+                const rawUrl = supabase.storage.from("project-plans").getPublicUrl(plan.png_url).data.publicUrl;
+                try {
+                  planImagesByPlanId[plan.id] = await optimizePhotoToJpegDataUri(rawUrl, { width: 1600, quality: 75 });
+                } catch (e) {
+                  console.error(`   ❌ Plan ${plan.id}: image optimize failed -`, e.message);
+                }
+              } else {
+                console.warn(`   ⚠️  Plan ${plan.id} has no png_url — photos on this plan will show "Plan indisponible"`);
+              }
+            }
+          }
+        }
+
+        console.log(`✅ Localized-photos plan data: ${Object.keys(planImagesByPlanId).length} plan image(s)\n`);
+      }
+
        const PHOTO_CONCURRENCY = 4;
 const photoTasks = [];
 for (const pin of preparedPins) {
@@ -695,6 +749,8 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
           planNames,
           planningImages:    planningImages || [],
           planningObservations: planningObservations || null,
+          planImagesByPlanId,
+          planDimensionsByPlanId,
           reportContent: {
             planningImages:        planningImages || [],
             planningObservations:  planningObservations || null,

@@ -195,6 +195,9 @@ const normalizeConfig = (config, displayMode) => {
       galleryShowName:        true,
       galleryShowDescription: false,
       galleryShowStatus:      true,
+      // ── Options du mode "Photos localisées" ──
+      localizedShowTaskName:  false,
+      localizedPlanSize:      "medium",
       ...(base.tasks || {}),
     },
     listView: {
@@ -528,6 +531,102 @@ const PhotoGalleryView = ({ selectedPins, statuses, config, fontFamily }) => {
   )
 }
 
+// ── "Photos localisées" ────────────────────────────────────────────────────
+// Une ligne par photo géolocalisée : sa description en titre, puis la photo et
+// sa position sur le plan (le plan en entier, avec un point à plan_x/plan_y)
+// côte à côte.
+//
+// planImagesByPlanId  : { [plan_id]: url de l'image BRUTE et complète du plan
+//                          (ex: plans.png_url), PAS la version tuilée }
+// planDimensionsByPlanId : { [plan_id]: { width, height } } — dimensions
+//                          réelles du plan (colonnes plans.width / plans.height),
+//                          nécessaires pour que le point soit positionné au bon
+//                          endroit (on dimensionne la boîte à l'identique du
+//                          ratio du plan pour éviter tout recadrage/déformation
+//                          qui décalerait le point).
+const LocalizedPhotosView = ({ selectedPins, config, fontFamily, planImagesByPlanId = {}, planDimensionsByPlanId = {} }) => {
+  const showTaskName = config?.tasks?.localizedShowTaskName ?? false
+  const planSizeMap  = { small: 90, medium: 120, large: 150 }
+  const planBoxMax   = planSizeMap[config?.tasks?.localizedPlanSize || 'medium']
+  const primaryColor = config?.primaryColor || "#44403c"
+
+  const localizedPhotos = selectedPins.flatMap(pin =>
+    (pin.pins_photos || [])
+      .filter(photo => photo.plan_id != null && photo.plan_x != null && photo.plan_y != null)
+      .map(photo => ({ photo, pin }))
+  )
+
+  if (!localizedPhotos.length) return (
+    <View style={{ marginTop: 8 }}>
+      <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>Aucune photo localisée disponible.</Text>
+    </View>
+  )
+
+  return (
+    <View style={{ marginTop: 8 }}>
+      {localizedPhotos.map(({ photo, pin }, i) => {
+        const planImageUrl = planImagesByPlanId[photo.plan_id]
+        const planDims     = planDimensionsByPlanId[photo.plan_id]
+
+        // Boîte du plan dimensionnée au même ratio que le plan réel, pour que
+        // le point en % (plan_x/plan_y) tombe exactement au bon endroit.
+        let boxWidth  = planBoxMax
+        let boxHeight = planBoxMax
+        if (planDims?.width && planDims?.height) {
+          const ratio = planDims.width / planDims.height
+          if (ratio >= 1) { boxWidth = planBoxMax; boxHeight = planBoxMax / ratio }
+          else            { boxHeight = planBoxMax; boxWidth = planBoxMax * ratio }
+        }
+
+        return (
+          <View key={photo.id || i} wrap={false} style={{ marginBottom: 16 }}>
+            <Text style={{ fontSize: 10, fontWeight: "bold", color: "#292524", marginBottom: 6, fontFamily }}>
+              {photo.description || "Sans description"}
+            </Text>
+            <View style={{ flexDirection: "row", gap: 10, alignItems: "flex-start" }}>
+              <Image
+                src={photo.public_url}
+                style={{ width: planBoxMax, height: planBoxMax, objectFit: "cover", borderRadius: 4 }}
+              />
+              <View style={{ width: boxWidth, height: boxHeight, position: "relative", borderRadius: 4, overflow: "hidden", backgroundColor: "#f5f5f4" }}>
+                {planImageUrl ? (
+                  <>
+                    <Image src={planImageUrl} style={{ width: boxWidth, height: boxHeight, objectFit: "fill" }} />
+                    <View
+                      style={{
+                        position: "absolute",
+                        left:   `${photo.plan_x * 100}%`,
+                        top:    `${photo.plan_y * 100}%`,
+                        width:  12,
+                        height: 12,
+                        marginLeft: -6,
+                        marginTop:  -6,
+                        borderRadius: 6,
+                        backgroundColor: primaryColor,
+                        borderWidth: 2,
+                        borderColor: "white",
+                      }}
+                    />
+                  </>
+                ) : (
+                  <View style={{ width: boxWidth, height: boxHeight, alignItems: "center", justifyContent: "center" }}>
+                    <Text style={{ fontSize: 7, color: "#a8a29e", fontFamily }}>Plan indisponible</Text>
+                  </View>
+                )}
+              </View>
+            </View>
+            {showTaskName && (
+              <Text style={{ fontSize: 8, color: "#78716c", marginTop: 4, fontStyle: "italic", fontFamily }}>
+                {pin?.name || "Tâche sans nom"}
+              </Text>
+            )}
+          </View>
+        )
+      })}
+    </View>
+  )
+}
+
 const ParticipantsSectionContent = ({ participants = [], config, primaryColor, fontFamily, sectionTitles }) => {
   const pc                            = config?.participants || {};
   const isGrid                        = (pc.layout || 'grid') === 'grid';
@@ -777,6 +876,9 @@ export default function PdfReportServer({
   planNames           = {},
   planningImages      = [],
   planningObservations = null,
+  // ── Nécessaires pour le mode "Photos localisées" ──
+  planImagesByPlanId    = {},  // { [plan_id]: url image brute complète du plan (plans.png_url) }
+  planDimensionsByPlanId = {}, // { [plan_id]: { width, height } } (plans.width / plans.height)
 }) {
   const templateConfig    = normalizeConfig(config, displayMode);
   const primaryColor      = templateConfig.primaryColor || "#44403c";
@@ -864,6 +966,14 @@ export default function PdfReportServer({
             )}
             {actualDisplayMode === "photoGallery" ? (
               <PhotoGalleryView selectedPins={selectedPins} statuses={statuses} config={templateConfig} fontFamily={fontFamily} primaryColor={primaryColor} />
+            ) : actualDisplayMode === "localizedPhotos" ? (
+              <LocalizedPhotosView
+                selectedPins={selectedPins}
+                config={templateConfig}
+                fontFamily={fontFamily}
+                planImagesByPlanId={planImagesByPlanId}
+                planDimensionsByPlanId={planDimensionsByPlanId}
+              />
             ) : actualDisplayMode === "table" ? (
               <TableView selectedPins={selectedPins} categories={categories} statuses={statuses} fields={fields} config={templateConfig} fontFamily={fontFamily} />
             ) : (
