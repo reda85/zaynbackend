@@ -341,7 +341,7 @@ const TableView = ({ selectedPins, categories, statuses, fields, config, fontFam
 };
 
 const ListView = ({ selectedPins, categories, statuses, fields, config, fontFamily }) => {
-  const snapshotSizeMap = { small: { width: 100, height: 100 }, medium: { width: 120, height: 120 }, large: { width: 140, height: 140 } };
+  const snapshotSizeMap = { small: { width: 100, height: 100 }, medium: { width: 120, height: 120 }, large: { width: 140, height: 140 }, xlarge: { width: 210, height: 210 } };
   const snapshotSize    = snapshotSizeMap[config?.listView?.snapshotSize || 'large'];
   const primaryColor    = config?.primaryColor || "#44403c";
   return (
