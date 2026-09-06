@@ -429,8 +429,8 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
                   {pin.pins_photos.map((photo, i) => (
                     <View key={i} style={{ alignItems: "center" }}>
-                      <Image src={photo.public_url} style={{ width: 110, height: 110, objectFit: "cover", borderRadius: 4 }} />
-                      {photo.description && <Text style={{ fontSize: 7, color: "#78716c", marginTop: 3, textAlign: "center", maxWidth: 110, fontFamily }}>{photo.description}</Text>}
+                      <Image src={photo.public_url} style={{ width: snapshotSize.width, height: snapshotSize.height, objectFit: "cover", borderRadius: 4 }} />
+                      {photo.description && <Text style={{ fontSize: 7, color: "#78716c", marginTop: 3, textAlign: "center", maxWidth: snapshotSize.width, fontFamily }}>{photo.description}</Text>}
                     </View>
                   ))}
                 </View>
