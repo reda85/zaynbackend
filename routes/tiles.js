@@ -2,18 +2,21 @@
 import express from 'express';
 const router = express.Router();
 import { supabase } from '../lib/supabase.js';
+import { requireAuth, requirePlanAccess } from '../lib/auth.js';
 
 /**
  * GET /api/tiles/:planId/:z/:tile
- * Servir une tile depuis Supabase Storage
+ * Servir une tile depuis Supabase Storage.
+ * Sans authentification : les visionneuses chargent les tuiles comme des
+ * images (pas d'en-tête possible) et le bucket « project-plans » est public.
  * Format du tile: x_y.png (exemple: 0_0.png, 1_2.png)
  */
 router.get('/:planId/:z/:tile', async (req, res) => {
   try {
     const { planId, z, tile } = req.params;
     
-    // Valider le format du tile (doit être x_y.png)
-    if (!(tile.endsWith('.png') || tile.endsWith('.jpg') || tile.endsWith('.jpeg')) ) {
+    // Format DeepZoom strict : niveau numérique, tuile « x_y.ext ».
+    if (!/^\d+$/.test(z) || !/^\d+_\d+\.(png|jpe?g)$/.test(tile)) {
       return res.status(400).json({ error: 'Invalid tile format' });
     }
     
@@ -64,7 +67,7 @@ router.get('/:planId/:z/:tile', async (req, res) => {
  * GET /api/plans/:planId
  * Récupérer les métadonnées d'un plan
  */
-router.get('/plans/:planId', async (req, res) => {
+router.get('/plans/:planId', requireAuth, requirePlanAccess('params.planId'), async (req, res) => {
   try {
     const { planId } = req.params;
     

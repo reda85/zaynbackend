@@ -16,7 +16,6 @@ import multer from "multer";
 import fs from "fs-extra";
 import crypto from "crypto";
 import os from "os";
-import jwt from 'jsonwebtoken'
 
 import { promisify } from "util";
 import { exec as execCallback } from "child_process";
@@ -24,7 +23,8 @@ import { exec as execCallback } from "child_process";
 import uploadRoutes from "./routes/upload.js";
 import tilesRoutes from "./routes/tiles.js";
 import updatePlanRouter from "./routes/update-plan.js";
-import { worker, pdfProcessingQueue } from "./queues/pdfProcessingQueue.js";
+import { pdfProcessingQueue, startWorker } from "./queues/pdfProcessingQueue.js";
+import { requireAuth, requireProjectMember, visibleAuthIds, basicAuth } from "./lib/auth.js";
 // ========================================================================================
 // CANVAS FONT REGISTRATION
 // @napi-rs/canvas does NOT use system fonts on Linux by default.
@@ -170,49 +170,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-function requireAuth(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing Authorization header' });
-  }
-  try {
-    const token = authHeader.slice(7);
-    const payload = jwt.verify(token, process.env.SUPABASE_JWT_SECRET);
-    req.user = { id: payload.sub, email: payload.email };
-    req.token = token;
-    next();
-  } catch {
-    res.status(401).json({ error: 'Invalid or expired token' });
-  }
-}
-
-function requireProjectMember(paramPath) {
-  return async function (req, res, next) {
-    const projectId = paramPath.split('.').reduce((o, k) => o?.[k], req);
-    if (!projectId) {
-      return res.status(400).json({ error: `Missing projectId (expected at ${paramPath})` });
-    }
-    const { createClient } = await import('@supabase/supabase-js');
-    const userClient = createClient(
-      process.env.SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-      { global: { headers: { Authorization: `Bearer ${req.token}` } } }
-    );
-    const { data } = await userClient.from('projects').select('id').eq('id', projectId).maybeSingle();
-    if (!data) return res.status(403).json({ error: 'Access denied: not a member of this project' });
-    next();
-  };
-}
-
-function requireSelf(paramPath) {
-  return function (req, res, next) {
-    const targetUserId = paramPath.split('.').reduce((o, k) => o?.[k], req);
-    if (!targetUserId) return res.status(400).json({ error: `Missing userId (expected at ${paramPath})` });
-    if (req.user.id !== targetUserId) return res.status(403).json({ error: 'Access denied' });
-    next();
-  };
-}
-
 // ------------------------
 // PDF.js setup
 const pdfjsLib = await (async () => {
@@ -249,11 +206,11 @@ app.use('/fonts', (req, res, next) => {
   next();
 }, express.static(path.join(__dirname, 'fonts')));
 
-app.get('/api/test-font', (req, res) => {
-  const p = path.join(__dirname, 'fonts', 'Lato-Regular.ttf');
-  res.json({ path: p, exists: fs.existsSync(p) });
-});
-console.log("🔄 PDF Processing Worker started");
+// Traitement des plans : worker intégré, sauf s'il tourne dans un service séparé (worker.js).
+if (process.env.DISABLE_INLINE_WORKER !== '1') {
+  startWorker();
+  console.log("🔄 PDF Processing Worker started");
+}
 
 // Bull Board
 import { createBullBoard } from "@bull-board/api";
@@ -266,7 +223,17 @@ createBullBoard({
   queues: [new BullMQAdapter(pdfProcessingQueue)],
   serverAdapter,
 });
-app.use("/admin/queues", serverAdapter.getRouter());
+// Tableau de bord des files : protégé par identifiant / mot de passe, et
+// désactivé tant que BULL_BOARD_USER et BULL_BOARD_PASSWORD ne sont pas définis.
+if (process.env.BULL_BOARD_USER && process.env.BULL_BOARD_PASSWORD) {
+  app.use(
+    "/admin/queues",
+    basicAuth(process.env.BULL_BOARD_USER, process.env.BULL_BOARD_PASSWORD),
+    serverAdapter.getRouter()
+  );
+} else {
+  app.use("/admin/queues", (req, res) => res.status(404).json({ error: "Not found" }));
+}
 
 // ========================================================================================
 // PDF RENDERING UTILITIES
@@ -530,8 +497,8 @@ app.post("/api/report",
           .select(`*, categories(*), Status(*), assigned_to(*), created_by(*), projects(*), pins_photos(*), plans(file_url), comments(*, username, created_at)`)
           .eq("project_id", projectId)
           .in("id", ids),
-        supabase.from("categories").select("*"),
-        supabase.from("Status").select("*"),
+        supabase.from("categories").select("*").eq("project_id", projectId),
+        supabase.from("Status").select("*").eq("project_id", projectId),
         supabase.from("projects").select("*,organizations(*)").eq("id", projectId).single(),
       ]);
 
@@ -935,15 +902,17 @@ app.get("/api/mediareport",
 // PUSH TOKEN MANAGEMENT (unchanged)
 // ========================================================================================
 
-app.post("/api/fcm-tokens", async (req, res) => {
+// Un utilisateur ne gère que SES jetons : l'identifiant vient du jeton
+// d'authentification, jamais du corps de la requête.
+app.post("/api/fcm-tokens", requireAuth, async (req, res) => {
   try {
-    const { userId, fcmToken, deviceId, deviceType } = req.body;
-    if (!userId || !fcmToken) return res.status(400).json({ error: "Missing required fields" });
-    if (!Expo.isExpoPushToken(fcmToken)) return res.status(400).json({ error: `Invalid Expo push token: ${fcmToken}` });
+    const { fcmToken, deviceId, deviceType } = req.body;
+    if (!fcmToken) return res.status(400).json({ error: "Missing required fields" });
+    if (!Expo.isExpoPushToken(fcmToken)) return res.status(400).json({ error: "Invalid Expo push token" });
     const { data, error } = await supabase
       .from("user_fcm_tokens")
       .upsert(
-        { user_id: userId, fcm_token: fcmToken, device_id: deviceId, device_type: deviceType, updated_at: new Date().toISOString() },
+        { user_id: req.user.id, fcm_token: fcmToken, device_id: deviceId, device_type: deviceType, updated_at: new Date().toISOString() },
         { onConflict: "user_id,device_id" }
       )
       .select();
@@ -955,10 +924,11 @@ app.post("/api/fcm-tokens", async (req, res) => {
   }
 });
 
-app.delete("/api/fcm-tokens/:userId/:deviceId", async (req, res) => {
+app.delete("/api/fcm-tokens/:userId/:deviceId", requireAuth, async (req, res) => {
   try {
-    const { userId, deviceId } = req.params;
-    const { error } = await supabase.from("user_fcm_tokens").delete().match({ user_id: userId, device_id: deviceId });
+    if (req.params.userId !== req.user.id) return res.status(403).json({ error: "Access denied" });
+    const { error } = await supabase
+      .from("user_fcm_tokens").delete().match({ user_id: req.user.id, device_id: req.params.deviceId });
     if (error) throw error;
     res.json({ success: true, message: "Push token deleted" });
   } catch (error) {
@@ -967,35 +937,68 @@ app.delete("/api/fcm-tokens/:userId/:deviceId", async (req, res) => {
   }
 });
 
-app.post("/api/notifications/send-to-user", async (req, res) => {
+// Envoi à des utilisateurs : uniquement ceux que l'appelant a le droit de voir
+// (membres de ses organisations). Sans ce filtre, n'importe qui pouvait envoyer
+// une notification arbitraire à n'importe quel utilisateur.
+async function notifyUsers(req, userIds, title, body, data) {
+  const allowed = await visibleAuthIds(req, userIds);
+  if (allowed.length === 0) return { status: 404, payload: { error: "No reachable recipients" } };
+  const { data: tokens, error } = await supabase.from("user_fcm_tokens").select("fcm_token").in("user_id", allowed);
+  if (error) throw error;
+  if (!tokens || tokens.length === 0) return { status: 404, payload: { error: "No push tokens found" } };
+  const result = await sendExpoNotifications(tokens.map((t) => t.fcm_token), title, body, data || {});
+  return { status: 200, payload: { success: true, ...result } };
+}
+
+app.post("/api/notifications/send-to-user", requireAuth, async (req, res) => {
   try {
     const { userId, title, body, data } = req.body;
-    const { data: tokens, error } = await supabase.from("user_fcm_tokens").select("fcm_token").eq("user_id", userId);
-    if (error) throw error;
-    if (!tokens || tokens.length === 0) return res.status(404).json({ error: "No push tokens found for user" });
-    const result = await sendExpoNotifications(tokens.map((t) => t.fcm_token), title, body, data || {});
-    res.json({ success: true, ...result });
+    if (!userId || !title) return res.status(400).json({ error: "Missing required fields" });
+    const { status, payload } = await notifyUsers(req, [userId], title, body, data);
+    res.status(status).json(payload);
   } catch (error) {
     console.error("Error sending notification:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post("/api/pins/assign", async (req, res) => {
-  console.log("Assigning pin...");
+app.post("/api/notifications/send-bulk", requireAuth, async (req, res) => {
   try {
-    const { pinId, assignedToUserId, assignedByName } = req.body;
-    const { data: tokens, error: tokensError } = await supabase
-      .from("user_fcm_tokens").select("fcm_token").eq("user_id", assignedToUserId);
-    if (tokensError) throw tokensError;
-    if (tokens && tokens.length > 0) {
-      const result = await sendExpoNotifications(
-        tokens.map((t) => t.fcm_token),
-        "Une nouvelle tâche a été assignée !",
-        `${assignedByName} vous a assigné une tâche`,
-        { type: "pin_assigned", pinId, assignedBy: assignedByName }
-      );
-      console.log("Notification result:", result);
+    const { userIds, title, body, data } = req.body;
+    if (!Array.isArray(userIds) || !title) return res.status(400).json({ error: "Missing required fields" });
+    const { status, payload } = await notifyUsers(req, userIds.slice(0, 500), title, body, data);
+    res.status(status).json(payload);
+  } catch (error) {
+    console.error("Error sending bulk notification:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Notification « une tâche vous a été assignée ». Le destinataire est lu sur le
+// pin lui-même, à travers les droits de l'appelant.
+app.post("/api/pins/assign", requireAuth, async (req, res) => {
+  try {
+    const { pinId, assignedByName } = req.body;
+    if (!pinId) return res.status(400).json({ error: "Missing pinId" });
+
+    const { data: pin } = await req.db
+      .from("pdf_pins").select("id, name, assigned_to(auth_id)").eq("id", pinId).maybeSingle();
+    if (!pin) return res.status(403).json({ error: "Access denied: pin not found or not accessible" });
+
+    const recipient = pin.assigned_to?.auth_id;
+    if (recipient && recipient !== req.user.id) {
+      const { data: tokens, error: tokensError } = await supabase
+        .from("user_fcm_tokens").select("fcm_token").eq("user_id", recipient);
+      if (tokensError) throw tokensError;
+      if (tokens && tokens.length > 0) {
+        const by = String(assignedByName || "Un membre").slice(0, 80);
+        await sendExpoNotifications(
+          tokens.map((t) => t.fcm_token),
+          "Une nouvelle tâche a été assignée !",
+          `${by} vous a assigné une tâche`,
+          { type: "pin_assigned", pinId, assignedBy: by }
+        );
+      }
     }
     res.json({ success: true, message: "Pin assigned and notification sent", pinId });
   } catch (error) {
@@ -1004,72 +1007,11 @@ app.post("/api/pins/assign", async (req, res) => {
   }
 });
 
-app.post("/api/tasks/assign", async (req, res) => {
-  try {
-    const { taskId, taskTitle, assignedToUserId, assignedByName } = req.body;
-    const { data: task, error: taskError } = await supabase
-      .from("tasks")
-      .insert({ id: taskId, title: taskTitle, assigned_to: assignedToUserId, assigned_by: assignedByName })
-      .select().single();
-    if (taskError) throw taskError;
-    const { data: tokens, error: tokensError } = await supabase
-      .from("user_fcm_tokens").select("fcm_token").eq("user_id", assignedToUserId);
-    if (tokensError) throw tokensError;
-    if (tokens && tokens.length > 0) {
-      const result = await sendExpoNotifications(
-        tokens.map((t) => t.fcm_token),
-        "📋 New Task Assigned!",
-        `${assignedByName} assigned you: ${taskTitle}`,
-        { type: "task_assigned", taskId, taskTitle, assignedBy: assignedByName }
-      );
-      console.log(`Task notification: ${result.successCount} sent, ${result.failureCount} failed`);
-    }
-    res.json({ success: true, message: "Task assigned and notification sent", task });
-  } catch (error) {
-    console.error("Error assigning task:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post("/api/notifications/send-bulk", async (req, res) => {
-  try {
-    const { userIds, title, body, data } = req.body;
-    const { data: tokens, error } = await supabase.from("user_fcm_tokens").select("fcm_token").in("user_id", userIds);
-    if (error) throw error;
-    if (!tokens || tokens.length === 0) return res.status(404).json({ error: "No push tokens found" });
-    const result = await sendExpoNotifications(tokens.map((t) => t.fcm_token), title, body, data || {});
-    res.json({ success: true, ...result });
-  } catch (error) {
-    console.error("Error sending bulk notification:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post("/api/notifications/send-to-topic", async (req, res) => {
-  try {
-    const { topic, title, body, data } = req.body;
-    const { data: tokens, error } = await supabase.from("user_fcm_tokens").select("fcm_token").contains("topics", [topic]);
-    if (error) throw error;
-    if (!tokens || tokens.length === 0) return res.status(404).json({ error: `No subscribers found for topic: ${topic}` });
-    const result = await sendExpoNotifications(tokens.map((t) => t.fcm_token), title, body, data || {});
-    res.json({ success: true, ...result });
-  } catch (error) {
-    console.error("Error sending topic notification:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post("/api/notifications/subscribe-to-topic", async (req, res) => {
-  try {
-    const { userIds, topic } = req.body;
-    const { error } = await supabase.rpc("append_topic_to_tokens", { p_user_ids: userIds, p_topic: topic });
-    if (error) throw error;
-    res.json({ success: true, message: `Subscribed ${userIds.length} user(s) to topic: ${topic}` });
-  } catch (error) {
-    console.error("Error subscribing to topic:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
+// Les routes /api/tasks/assign, /api/notifications/send-to-topic et
+// /api/notifications/subscribe-to-topic ont été retirées : la première écrivait
+// dans une table « tasks » qui n'existe pas, les deux autres permettaient de
+// s'abonner ou d'émettre vers un sujet sans aucun contrôle et ne sont appelées
+// ni par le web ni par une fonction SQL existante (append_topic_to_tokens).
 
 // ========================================================================================
 // UTILITY ENDPOINTS
@@ -1085,25 +1027,10 @@ app.get("/health", (req, res) => {
 });
 
 app.get("/", (req, res) => {
-  res.json({
-    message: "PDF Report Server",
-    endpoints: {
-      health: "/health",
-      report: "POST /api/report",
-      mediaReport: "GET /api/mediareport",
-      registerToken: "POST /api/fcm-tokens",
-      deleteToken: "DELETE /api/fcm-tokens/:userId/:deviceId",
-      sendToUser: "POST /api/notifications/send-to-user",
-      sendBulk: "POST /api/notifications/send-bulk",
-      sendToTopic: "POST /api/notifications/send-to-topic",
-      subscribeToTopic: "POST /api/notifications/subscribe-to-topic",
-      assignPin: "POST /api/pins/assign",
-      assignTask: "POST /api/tasks/assign",
-    },
-  });
+  res.json({ message: "Zaynspace backend", health: "/health" });
 });
 
-app.get("/api/test-snapshot", async (req, res) => {
+app.get("/api/test-snapshot", requireAuth, requireProjectMember('query.projectId'), async (req, res) => {
   try {
     const { projectId, pinId } = req.query;
     if (!projectId || !pinId) return res.status(400).json({ error: "Missing required parameters: projectId and pinId" });
@@ -1119,12 +1046,13 @@ app.get("/api/test-snapshot", async (req, res) => {
       return res.status(400).json({ error: "Pin missing x or y coordinates", availableFields: Object.keys(pin), pinData: pin });
     }
     const snapshot = await cropZoom(pdfImg, pin.x, pin.y, 800);
+    const safePinId = String(pinId).replace(/[^a-zA-Z0-9-]/g, '');
     res.send(`
       <!DOCTYPE html>
       <html>
         <head><title>Snapshot Test</title></head>
         <body style="background:#f0f0f0;padding:20px;">
-          <h1>Snapshot Test — Pin ${pinId}</h1>
+          <h1>Snapshot Test — Pin ${safePinId}</h1>
           <p>Position: (${pin.x}, ${pin.y}) | PDF: ${pdfImg.width}x${pdfImg.height}</p>
           <img src="${snapshot}" style="border:2px solid #000;max-width:100%;" />
         </body>
@@ -1136,7 +1064,7 @@ app.get("/api/test-snapshot", async (req, res) => {
   }
 });
 
-app.get("/api/stats", async (req, res) => {
+app.get("/api/stats", requireAuth, async (req, res) => {
   try {
     const jobCounts = await pdfProcessingQueue.getJobCounts();
     res.json(jobCounts);
