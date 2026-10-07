@@ -25,6 +25,7 @@ import tilesRoutes from "./routes/tiles.js";
 import updatePlanRouter from "./routes/update-plan.js";
 import { pdfProcessingQueue, startWorker } from "./queues/pdfProcessingQueue.js";
 import { requireAuth, requireProjectMember, visibleAuthIds, basicAuth } from "./lib/auth.js";
+import { startReportJob, getReportJob, describeReportJob } from "./lib/reportJobs.js";
 // ========================================================================================
 // CANVAS FONT REGISTRATION
 // @napi-rs/canvas does NOT use system fonts on Linux by default.
@@ -468,22 +469,15 @@ console.log(`🔤 Has Inter:`, GlobalFonts.has?.('Inter') ?? 'unknown');
 // REPORT ENDPOINT — uploads PDF to Storage, returns signed URL
 // ========================================================================================
 
-app.post("/api/report",
-  requireAuth,
-  requireProjectMember('body.projectId'),
-  async (req, res) => {
-    console.log("POST /api/report");
+// Génère le rapport, l'enregistre dans le stockage et renvoie son lien signé.
+// Utilisé tel quel (réponse directe) ou en arrière-plan (lib/reportJobs.js).
+async function generateReport(body) {
     const startTime = Date.now();
-
-    try {
+    {
       const {
         projectId, selectedIds, fields, displayMode, templateConfig,
         reportTitle, participants, planningImages, planningObservations, customSections,
-      } = req.body;
-
-      if (!projectId || !selectedIds) {
-        return res.status(400).json({ error: "Missing required parameters: projectId and selectedIds" });
-      }
+      } = body;
 
       const ids = selectedIds;
       console.log(`\n${"=".repeat(80)}`);
@@ -768,13 +762,36 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
       const duration = ((Date.now() - startTime) / 1000).toFixed(2);
       console.log(`✅ PDF uploaded and signed in ${duration}s — ${storagePath}\n`);
 
-      res.json({
+      return {
         success:     true,
         downloadUrl: signedData.signedUrl,
         fileName,
         fileSize:    pdfBuffer.length,
         storagePath,
-      });
+      };
+    }
+}
+
+// POST /api/report
+//  - corps habituel            → attend la fin et renvoie le lien (comportement d'origine) ;
+//  - corps avec `async: true`  → 202 + { jobId } ; l'état se lit sur GET /api/report/jobs/:jobId.
+app.post("/api/report",
+  requireAuth,
+  requireProjectMember('body.projectId'),
+  async (req, res) => {
+    console.log("POST /api/report");
+    const { projectId, selectedIds } = req.body || {};
+    if (!projectId || !Array.isArray(selectedIds) || selectedIds.length === 0) {
+      return res.status(400).json({ error: "Missing required parameters: projectId and selectedIds" });
+    }
+
+    if (req.body.async === true) {
+      const job = startReportJob(req.user.id, () => generateReport(req.body));
+      return res.status(202).json({ jobId: job.id, status: job.status });
+    }
+
+    try {
+      res.json(await generateReport(req.body));
     } catch (err) {
       console.error("❌ REPORT GENERATION FAILED:", err.message);
       if (!res.headersSent) {
@@ -786,21 +803,19 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
     }
   });
 
+// État d'un rapport demandé avec `async: true` (rapport de tâches ou de médias).
+app.get("/api/report/jobs/:jobId", requireAuth, (req, res) => {
+  const job = getReportJob(req.params.jobId, req.user.id);
+  if (!job) return res.status(404).json({ error: "Report job not found" });
+  res.json(describeReportJob(job));
+});
+
 // ========================================================================================
 // MEDIA REPORT ENDPOINT (also upgraded to upload + signed URL)
 // ========================================================================================
 
-app.get("/api/mediareport",
-  requireAuth,
-  requireProjectMember('query.projectId'),
-  async (req, res) => {
-    try {
-      const { projectId, selectedIds } = req.query;
-      if (!projectId || !selectedIds) {
-        return res.status(400).json({ error: "Missing required parameters: projectId and selectedIds" });
-      }
-
-      const ids = selectedIds.split(",").map((id) => id.trim());
+async function generateMediaReport({ projectId, ids }) {
+    {
 
       const { data: medias, error: mediasError } = await supabase
         .from("pins_photos")
@@ -880,23 +895,52 @@ app.get("/api/mediareport",
         .createSignedUrl(storagePath, 3600);
       if (signedError) throw new Error(`Signed URL failed: ${signedError.message}`);
 
-      res.json({
+      return {
         success: true,
         downloadUrl: signedData.signedUrl,
         fileName,
         fileSize: pdfBuffer.length,
         storagePath,
-      });
-    } catch (err) {
-      console.error("MEDIA REPORT ERROR:", err);
-      if (!res.headersSent) {
-        res.status(500).json({
-          error: err.message || "Internal server error",
-          details: process.env.NODE_ENV === "development" ? err.stack : undefined,
-        });
-      }
+      };
     }
-  });
+}
+
+// Identifiants des médias : liste séparée par des virgules (GET) ou tableau (POST).
+const parseIds = (value) =>
+  (Array.isArray(value) ? value : String(value || '').split(','))
+    .map((id) => String(id).trim())
+    .filter(Boolean);
+
+async function handleMediaReport(req, res, params) {
+  const projectId = params?.projectId;
+  const ids = parseIds(params?.selectedIds);
+  if (!projectId || ids.length === 0) {
+    return res.status(400).json({ error: "Missing required parameters: projectId and selectedIds" });
+  }
+  if (params.async === true || params.async === 'true') {
+    const job = startReportJob(req.user.id, () => generateMediaReport({ projectId, ids }));
+    return res.status(202).json({ jobId: job.id, status: job.status });
+  }
+  try {
+    res.json(await generateMediaReport({ projectId, ids }));
+  } catch (err) {
+    console.error("MEDIA REPORT ERROR:", err);
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: err.message || "Internal server error",
+        details: process.env.NODE_ENV === "development" ? err.stack : undefined,
+      });
+    }
+  }
+}
+
+// GET  /api/mediareport?projectId=…&selectedIds=a,b,c   (historique)
+// POST /api/mediareport  { projectId, selectedIds: [...], async? }
+//   Le POST évite une adresse trop longue quand beaucoup de photos sont choisies.
+app.get("/api/mediareport", requireAuth, requireProjectMember('query.projectId'),
+  (req, res) => handleMediaReport(req, res, req.query));
+app.post("/api/mediareport", requireAuth, requireProjectMember('body.projectId'),
+  (req, res) => handleMediaReport(req, res, req.body));
 
 // ========================================================================================
 // PUSH TOKEN MANAGEMENT (unchanged)
@@ -978,7 +1022,9 @@ app.post("/api/notifications/send-bulk", requireAuth, async (req, res) => {
 // pin lui-même, à travers les droits de l'appelant.
 app.post("/api/pins/assign", requireAuth, async (req, res) => {
   try {
-    const { pinId, assignedByName } = req.body;
+    // Le site envoie `assignedByName`, l'application mobile `assignedBy`.
+    const { pinId } = req.body;
+    const assignedByName = req.body.assignedByName ?? req.body.assignedBy;
     if (!pinId) return res.status(400).json({ error: "Missing pinId" });
 
     const { data: pin } = await req.db
@@ -1003,6 +1049,43 @@ app.post("/api/pins/assign", requireAuth, async (req, res) => {
     res.json({ success: true, message: "Pin assigned and notification sent", pinId });
   } catch (error) {
     console.error("Error assigning pin:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Notification « document ajouté » / « nouvelle version » aux membres du projet.
+// Appelée par l'application mobile après l'envoi d'un document.
+app.post("/api/documents/notify", requireAuth, requireProjectMember('body.projectId'), async (req, res) => {
+  try {
+    const { projectId, documentId, event, versionNumber } = req.body;
+    const documentName = String(req.body.documentName || 'Document').slice(0, 120);
+    if (!['document.uploaded', 'document.versioned'].includes(event)) {
+      return res.status(400).json({ error: "Unknown event" });
+    }
+
+    // Destinataires : les membres du projet, sauf l'auteur.
+    const { data: rows, error } = await supabase
+      .from("members_projects").select("members(auth_id)").eq("project_id", projectId);
+    if (error) throw error;
+    const recipients = [...new Set((rows || []).map((r) => r.members?.auth_id).filter(Boolean))]
+      .filter((id) => id !== req.user.id);
+    if (recipients.length === 0) return res.json({ success: true, sent: 0 });
+
+    const { data: tokens, error: tokensError } = await supabase
+      .from("user_fcm_tokens").select("fcm_token").in("user_id", recipients);
+    if (tokensError) throw tokensError;
+    if (!tokens || tokens.length === 0) return res.json({ success: true, sent: 0 });
+
+    const versioned = event === 'document.versioned';
+    await sendExpoNotifications(
+      tokens.map((t) => t.fcm_token),
+      versioned ? "Nouvelle version d'un document" : "Nouveau document",
+      versioned && versionNumber ? `${documentName} (version ${Number(versionNumber) || ''})`.trim() : documentName,
+      { type: event, projectId, documentId: documentId ?? null }
+    );
+    res.json({ success: true, sent: tokens.length });
+  } catch (error) {
+    console.error("Error sending document notification:", error);
     res.status(500).json({ error: error.message });
   }
 });
