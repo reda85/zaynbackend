@@ -4,6 +4,7 @@ import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import { createClient } from '@supabase/supabase-js';
 import { processPdfToTiles } from '../services/pdfProcessor.js';
+import { requireAuth, requirePlanAccess } from '../lib/auth.js';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
@@ -13,7 +14,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-router.post('/', upload.single('file'), async (req, res) => {
+router.post('/', requireAuth, upload.single('file'), requirePlanAccess('body.planId'), async (req, res) => {
   const { planId, revisionLabel } = req.body;
   const file = req.file;
 

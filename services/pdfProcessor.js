@@ -11,6 +11,15 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// Nom de base des fichiers d'un plan dans le stockage. L'identifiant du plan en
+// fait partie : deux plans importés avec le même nom de fichier dans un projet
+// n'écrasent plus le PDF, les tuiles et l'aperçu l'un de l'autre. Une révision
+// (routes/update-plan.js) garde l'identifiant du plan, donc le même dossier.
+export function storageBase(fileName, planId) {
+  const base = String(fileName || 'plan').replace(/\.pdf$/i, '').replace(/[^a-z0-9]/gi, '_').slice(0, 80);
+  return `${base}_${String(planId).replace(/[^a-z0-9]/gi, '').slice(0, 8)}`;
+}
+
 /**
  * Traiter un PDF en tiles avec parallélisation
  */
@@ -38,7 +47,7 @@ async function processPdfToTiles({
     await fs.writeFile(inputPdf, pdfBuffer);
     
     // Upload du PDF original vers Supabase
-    const safeBase = fileName.replace(/\.pdf$/i, '').replace(/[^a-z0-9]/gi, '_');
+    const safeBase = storageBase(fileName, planId);
     const pdfStoragePath = `${projectId}/${safeBase}.pdf`;
     
     console.log(`[${requestId}] 📤 Uploading PDF to: ${pdfStoragePath}`);
@@ -124,7 +133,6 @@ async function processPdfToTiles({
     console.log(`[${requestId}] ✅ All pages processed`);
     
     // 3️⃣ Finaliser - Mettre à jour le plan principal
-   // const safeBase = fileName.replace(/\.pdf$/i, '').replace(/[^a-z0-9]/gi, '_');
     const name = `${safeBase}-page1`; // Utiliser la première page comme référence
     const remoteTilesPath = `${projectId}/tiles/${name}`;
     
@@ -184,7 +192,7 @@ async function processPage({
   supabaseClient,
   onPageProgress
 }) {
-  const safeBase = fileName.replace(/\.pdf$/i, '').replace(/[^a-z0-9]/gi, '_');
+  const safeBase = storageBase(fileName, planId);
   const name = `${safeBase}-page${pageNumber}`;
   const pagePdf = path.join(pagesDir, `${name}.pdf`);
   const outputPng = path.join(pagesDir, `${name}.png`);
