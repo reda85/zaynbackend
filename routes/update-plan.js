@@ -7,14 +7,9 @@ import { enqueuePdf } from '../queues/pdfProcessingQueue.js';
 import { requireAuth, requirePlanAccess } from '../lib/auth.js';
 
 const router = express.Router();
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf') cb(null, true);
-    else cb(new Error('Only PDF files are allowed'));
-  },
-});
+// Pas de filtre sur le type annoncé par le client (souvent absent ou générique) :
+// c'est le contenu du fichier qui est vérifié plus bas.
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 /**
  * POST /api/update-plan  (multipart : file, planId, revisionLabel?)
@@ -38,7 +33,7 @@ router.post('/', requireAuth, upload.single('file'), requirePlanAccess('body.pla
 
     const { data: plan, error: fetchError } = await supabase
       .from('plans')
-      .select('id, project_id, file_url, png_url, tiles_path, width, height, pages, name, status, previous_file_url, revision_label')
+      .select('id, project_id, file_url, png_url, tiles_path, width, height, pages, name, status, processing_progress, error_message, previous_file_url, revision_label')
       .eq('id', planId)
       .single();
     if (fetchError || !plan) return res.status(404).json({ error: 'Plan introuvable' });
@@ -50,7 +45,7 @@ router.post('/', requireAuth, upload.single('file'), requirePlanAccess('body.pla
     // Le passage en « traitement » se fait avec le client de l'utilisateur : ce
     // sont les RLS qui décident s'il a le droit de modifier ce plan. La condition
     // sur le statut évite que deux envois simultanés ne se lancent tous les deux.
-    const { data: claimed, error: claimError } = await req.db
+    let claim = req.db
       .from('plans')
       .update({
         status: 'processing',
@@ -60,9 +55,9 @@ router.post('/', requireAuth, upload.single('file'), requirePlanAccess('body.pla
         revision_label: revisionLabel || null,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', planId)
-      .eq('status', plan.status)
-      .select('id');
+      .eq('id', planId);
+    claim = plan.status == null ? claim.is('status', null) : claim.eq('status', plan.status);
+    const { data: claimed, error: claimError } = await claim.select('id');
     if (claimError) throw claimError;
     if (!claimed || claimed.length === 0) {
       return res.status(403).json({ error: 'Vous n\'avez pas le droit de modifier ce plan, ou il vient d\'être modifié' });
@@ -79,6 +74,7 @@ router.post('/', requireAuth, upload.single('file'), requirePlanAccess('body.pla
         revision: {
           id: crypto.randomUUID().replace(/-/g, '').slice(0, 10),
           previous: {
+            status: plan.status ?? 'ready',
             tiles_path: plan.tiles_path, pages: plan.pages, width: plan.width, height: plan.height,
             previous_file_url: plan.previous_file_url, revision_label: plan.revision_label,
           },
@@ -88,7 +84,8 @@ router.post('/', requireAuth, upload.single('file'), requirePlanAccess('body.pla
       // Rien n'a été lancé : le plan revient exactement à son état d'avant.
       await supabase.from('plans').update({
         status: plan.status,
-        processing_progress: 100,
+        processing_progress: plan.processing_progress ?? 100,
+        error_message: plan.error_message ?? null,
         previous_file_url: plan.previous_file_url,
         revision_label: plan.revision_label,
       }).eq('id', planId);

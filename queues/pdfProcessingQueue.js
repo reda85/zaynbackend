@@ -18,7 +18,8 @@ const connection = new Redis({
 const pdfProcessingQueue = new Queue(QUEUE_NAME, { connection });
 
 /** Emplacement temporaire du PDF déposé en attendant son traitement. */
-export const pendingUploadPath = (projectId, planId) => `${projectId}/_uploads/${planId}.pdf`;
+export const pendingUploadPath = (projectId, planId, revisionId) =>
+  `${projectId}/_uploads/${planId}${revisionId ? `_${revisionId}` : ''}.pdf`;
 
 /**
  * Dépose le PDF dans le stockage et met en file un job qui ne contient que son
@@ -26,7 +27,7 @@ export const pendingUploadPath = (projectId, planId) => `${projectId}/_uploads/$
  * dans Redis, puis exposé par le tableau de bord et la route de suivi des jobs.
  */
 export async function enqueuePdf({ buffer, projectId, planId, fileName, requestId, revision = null }) {
-  const pdfPath = pendingUploadPath(projectId, planId);
+  const pdfPath = pendingUploadPath(projectId, planId, revision?.id);
   const { error } = await supabase.storage
     .from(BUCKET)
     .upload(pdfPath, buffer, { contentType: 'application/pdf', upsert: true });
@@ -101,7 +102,7 @@ async function settleFailedJob(job, err) {
   const reason = String(err?.message || 'Traitement interrompu').slice(0, 500);
   const patch = revision
     ? {
-        status: 'ready',
+        status: revision.previous?.status ?? 'ready',
         processing_progress: 100,
         error_message: `La nouvelle version n'a pas pu être traitée : ${reason}`,
         previous_file_url: revision.previous?.previous_file_url ?? null,
@@ -119,6 +120,38 @@ async function settleFailedJob(job, err) {
   if (error) throw error;
 }
 
+/**
+ * Plans restés « en cours » alors qu'aucun job ne les traite plus (worker
+ * arrêté au mauvais moment, job purgé) : ils redeviennent utilisables s'ils
+ * avaient déjà des tuiles, sinon ils sont marqués en échec.
+ */
+export async function recoverOrphanPlans({ olderThanMs = 20 * 60 * 1000 } = {}) {
+  const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+  const { data: stuck, error } = await supabase
+    .from('plans')
+    .select('id, tiles_path, updated_at, created_at')
+    .in('status', ['queued', 'processing'])
+    .is('deleted_at', null);
+  if (error || !stuck?.length) return 0;
+
+  const jobs = await pdfProcessingQueue.getJobs(['waiting', 'active', 'delayed', 'prioritized', 'waiting-children']);
+  const alive = new Set(jobs.map((j) => j?.data?.planId).filter(Boolean));
+  let recovered = 0;
+  for (const plan of stuck) {
+    if (alive.has(plan.id)) continue;
+    if ((plan.updated_at || plan.created_at || '') > cutoff) continue; // peut-être en cours de mise en file
+    const patch = plan.tiles_path
+      ? { status: 'ready', processing_progress: 100, error_message: 'Le traitement a été interrompu ; la version précédente est conservée.' }
+      : { status: 'failed', processing_progress: 0, error_message: 'Le traitement a été interrompu. Importez le plan à nouveau.' };
+    const { error: updateError } = await supabase
+      .from('plans').update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', plan.id).in('status', ['queued', 'processing']);
+    if (!updateError) recovered++;
+  }
+  if (recovered) console.log(`♻️  ${recovered} plan(s) sorti(s) d'un traitement interrompu`);
+  return recovered;
+}
+
 let worker = null;
 let cleanupTimer = null;
 
@@ -132,21 +165,32 @@ export function startWorker() {
   worker = new Worker(QUEUE_NAME, processJob, {
     connection,
     concurrency: 2,
-    lockDuration: 600000, // 10 minutes
-    lockRenewTime: 15000,
+    // qpdf et Ghostscript ne bloquent plus Node : le verrou est renouvelé
+    // normalement, et un job dont le worker a disparu est repris en 2 minutes
+    // au lieu de 10.
+    lockDuration: 120000,
+    lockRenewTime: 30000,
     limiter: { max: 5, duration: 60000 },
   });
 
   worker.on('completed', (job) => console.log(`✅ Job ${job.id} completed`));
   worker.on('failed', async (job, err) => {
     console.error(`❌ Job ${job?.id} failed:`, err.message);
-    if (!job || job.attemptsMade < (job.opts?.attempts ?? 1)) return; // une autre tentative suit
+    if (!job) return;
+    // On se fie à l'état réel du job : après une erreur, il repart en attente
+    // tant qu'il reste des tentatives ; un job interrompu trop de fois (worker
+    // tué) est abandonné sans les avoir toutes utilisées.
+    const state = await job.getState().catch(() => 'failed');
+    if (state !== 'failed') return;
     await settleFailedJob(job, err).catch((e) => console.error(`Job ${job.id} cleanup failed:`, e.message));
   });
   worker.on('error', (err) => console.error('❌ Worker error:', err.message));
 
+  recoverOrphanPlans().catch((e) => console.error('Orphan plan recovery failed:', e.message));
+
   cleanupTimer = setInterval(async () => {
     try {
+      await recoverOrphanPlans();
       await pdfProcessingQueue.clean(24 * 3600 * 1000, 100, 'completed');
       await pdfProcessingQueue.clean(7 * 24 * 3600 * 1000, 500, 'failed');
     } catch (error) {

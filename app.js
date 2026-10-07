@@ -26,7 +26,7 @@ import updatePlanRouter from "./routes/update-plan.js";
 import { pdfProcessingQueue, startWorker, stopWorker } from "./queues/pdfProcessingQueue.js";
 import { startWorkerProcess, stopWorkerProcess } from "./lib/workerProcess.js";
 import { requireAuth, requireProjectMember, visibleAuthIds, visibleIds, basicAuth } from "./lib/auth.js";
-import { assetToDataUri, placeholderImage } from "./lib/safeUrl.js";
+import { assetToDataUri, fetchAsset, placeholderImage } from "./lib/safeUrl.js";
 import { startReportJob, getReportJob, describeReportJob } from "./lib/reportJobs.js";
 // ========================================================================================
 // CANVAS FONT REGISTRATION
@@ -548,8 +548,7 @@ async function generateReport(body) {
         await Promise.all(
           batch.map(async (pdfUrl) => {
             try {
-              const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000, maxContentLength: 50 * 1024 * 1024 });
-              const pdfBuffer = Buffer.from(pdfResponse.data);
+              const pdfBuffer = await fetchAsset(pdfUrl);
               const pdfImg = await renderPdfPageRobust(pdfBuffer, 2.5);
               pdfCache.set(pdfUrl, pdfImg);
             } catch (error) {
@@ -877,8 +876,7 @@ async function generateMediaReport({ projectId, ids }) {
           let pdfImg = pdfCache.get(pdfUrl);
           if (!pdfImg) {
             try {
-              const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000, maxContentLength: 50 * 1024 * 1024 });
-              pdfImg = await renderPdfPageRobust(Buffer.from(pdfResponse.data));
+              pdfImg = await renderPdfPageRobust(await fetchAsset(pdfUrl));
               pdfCache.set(pdfUrl, pdfImg);
             } catch (error) {
               console.error(`Failed to process PDF for media ${media.id}:`, error.message);
@@ -1168,8 +1166,7 @@ app.get("/api/test-snapshot", requireAuth, requireProjectMember('query.projectId
     const filePath = pin.plans?.file_url;
     if (!filePath) return res.status(400).json({ error: "No PDF file found for this pin" });
     const pdfUrl = supabase.storage.from("project-plans").getPublicUrl(filePath).data.publicUrl;
-    const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000 });
-    const pdfImg = await renderPdfPageRobust(Buffer.from(pdfResponse.data));
+    const pdfImg = await renderPdfPageRobust(await fetchAsset(pdfUrl));
     if (pin.x === undefined || pin.y === undefined) {
       return res.status(400).json({ error: "Pin missing x or y coordinates", availableFields: Object.keys(pin), pinData: pin });
     }
@@ -1205,6 +1202,23 @@ app.get("/api/stats", requireAuth, async (req, res) => {
 // START
 // ========================================================================================
 
+// Erreurs d'envoi de fichier (trop volumineux, type refusé…) et erreurs non
+// prévues : toujours une réponse JSON, que les clients savent lire.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err instanceof multer.MulterError) {
+    const tooBig = err.code === "LIMIT_FILE_SIZE";
+    return res.status(tooBig ? 413 : 400).json({ error: tooBig ? "Fichier trop volumineux" : "Envoi de fichier invalide" });
+  }
+  if (err?.message === "Only PDF files are allowed") {
+    return res.status(400).json({ error: "Seuls les fichiers PDF sont acceptés" });
+  }
+  if (err?.type === "entity.too.large") return res.status(413).json({ error: "Requête trop volumineuse" });
+  if (err?.type === "entity.parse.failed") return res.status(400).json({ error: "Requête illisible" });
+  console.error("Unhandled route error:", err?.stack || err);
+  res.status(500).json({ error: "Internal server error" });
+});
+
 // Une promesse rejetée sans gestionnaire ne doit pas arrêter l'API.
 process.on("unhandledRejection", (reason) => {
   console.error("⚠️  Unhandled rejection:", reason?.stack || reason);
@@ -1226,8 +1240,10 @@ async function shutdown(signal) {
   console.log(`${signal} received, shutting down...`);
   const force = setTimeout(() => process.exit(0), 9000);
   force.unref();
-  server.close();
+  const closed = new Promise((resolve) => server.close(resolve));
+  server.closeIdleConnections?.();
   await Promise.allSettled([
+    closed,
     stopWorkerProcess(),
     PLAN_WORKER === 'inline' ? stopWorker() : Promise.resolve(),
   ]);

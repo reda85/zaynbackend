@@ -12,14 +12,14 @@ const execFileAsync = promisify(execFile);
 // qpdf et Ghostscript tournent dans leur propre processus, sans bloquer celui-ci
 // (avec execSync, plus rien ne répondait pendant toute la durée d'une page), et
 // sans passer par un shell : les chemins sont transmis tels quels.
-async function run(command, args, { timeout = 120000, maxBuffer = 16 * 1024 * 1024 } = {}) {
+async function run(command, args, { timeout = 120000, maxBuffer = 16 * 1024 * 1024, signal } = {}) {
   try {
-    const { stdout } = await execFileAsync(command, args, { timeout, maxBuffer, windowsHide: true });
+    const { stdout } = await execFileAsync(command, args, { timeout, maxBuffer, windowsHide: true, signal });
     return stdout;
   } catch (error) {
     // qpdf sort avec le code 3 quand il a réussi malgré des avertissements.
     if (command === 'qpdf' && error.code === 3 && !error.killed) return error.stdout || '';
-    if (error.killed) throw error; // délai dépassé : traité par l'appelant
+    if (error.killed || error.name === 'AbortError') throw error; // délai dépassé ou traitement annulé
     // Le détail (chemins temporaires, sortie de l'outil) va dans les journaux ;
     // l'utilisateur voit un message court dans `error_message`.
     console.error(`${command} failed:`, String(error.stderr || error.message).slice(0, 2000));
@@ -64,9 +64,17 @@ async function processPdfToTiles({
   const remoteTilesPath = `${projectId}/tiles/${safeBase}-page1`;
   // Les mises à jour de progression ne doivent ni interrompre le traitement ni
   // faire tomber le processus si la base est momentanément injoignable.
-  const reportProgress = (progress) =>
-    updatePlanStatus(planId, 'processing', progress).catch((e) =>
+  // Elles s'arrêtent dès que le traitement est terminé ou a échoué, et ne
+  // touchent qu'un plan encore « en cours » : une page qui finit en retard ne
+  // doit pas remettre en traitement un plan déjà rendu à l'utilisateur.
+  let finished = false;
+  const abort = new AbortController();
+  const pagePromises = [];
+  const reportProgress = (progress) => {
+    if (finished) return;
+    updatePlanStatus(planId, 'processing', progress, {}, { onlyWhileProcessing: true }).catch((e) =>
       console.error(`[${requestId}] progress update failed:`, e.message));
+  };
   
   try {
     if (!Buffer.isBuffer(pdfBuffer) || !pdfBuffer.subarray(0, 1024).includes('%PDF')) {
@@ -111,9 +119,9 @@ async function processPdfToTiles({
     
     // 1️⃣ Linearize
     console.log(`[${requestId}] ⚡ Linearizing...`);
-    await run('qpdf', [inputPdf, '--linearize', linearizedPdf], { timeout: 120000 });
+    await run('qpdf', [inputPdf, '--linearize', linearizedPdf], { timeout: 120000, signal: abort.signal });
     
-    pageCount = Number((await run('qpdf', ['--show-npages', linearizedPdf], { timeout: 30000 })).toString().trim());
+    pageCount = Number((await run('qpdf', ['--show-npages', linearizedPdf], { timeout: 30000, signal: abort.signal })).toString().trim());
     if (!Number.isInteger(pageCount) || pageCount < 1) throw new Error('PDF sans page lisible');
     
     console.log(`[${requestId}] 📊 Pages: ${pageCount}`);
@@ -125,8 +133,6 @@ async function processPdfToTiles({
     // Ajuster selon votre RAM : 8GB=2, 16GB=4, 32GB=8
     const limit = pLimit(4); // 4 pages en parallèle max
     
-    const pagePromises = [];
-    let processingComplete = false; // Flag pour arrêter les updates
     
     for (let i = 1; i <= pageCount; i++) {
       pagePromises.push(
@@ -140,10 +146,11 @@ async function processPdfToTiles({
           safeBase,
           setPreview: !revision,
           requestId,
+          signal: abort.signal,
           supabaseClient: supabase,
           onPageProgress: (pageProgress) => {
             // Ne mettre à jour que si le traitement n'est pas terminé
-            if (!processingComplete && pageProgress < 100) {
+            if (!finished && pageProgress < 100) {
               // Calculer la progression globale
               const baseProgress = 10;
               const processingRange = 80; // 10% → 90%
@@ -158,9 +165,7 @@ async function processPdfToTiles({
     }
     
     const results = await Promise.all(pagePromises);
-    
-    // Marquer le traitement comme terminé pour arrêter les updates asynchrones
-    processingComplete = true;
+    finished = true;
     
     console.log(`[${requestId}] ✅ All pages processed`);
     
@@ -196,8 +201,9 @@ async function processPdfToTiles({
     
     onProgress?.(100);
     
-    // Cleanup
-    await fs.remove(tmpDir);
+    // Le plan pointe désormais sur ces fichiers : un souci de ménage ne doit
+    // pas passer pour un échec du traitement.
+    await fs.remove(tmpDir).catch(() => {});
     
     return {
       success: true,
@@ -210,6 +216,12 @@ async function processPdfToTiles({
   } catch (error) {
     console.error(`[${requestId}] ❌ Processing error:`, error);
     
+    // Arrête les pages encore en cours (qpdf / Ghostscript compris) et attend
+    // qu'elles aient rendu la main avant de faire le ménage.
+    finished = true;
+    abort.abort();
+    await Promise.allSettled(pagePromises);
+    
     if (revision) {
       // Le plan affiche toujours l'ancienne version : on retire seulement ce
       // qui a été déposé pour la nouvelle (une nouvelle tentative le redéposera).
@@ -217,10 +229,9 @@ async function processPdfToTiles({
         id: planId, project_id: projectId, file_url: pdfStoragePath,
         tiles_path: remoteTilesPath, pages: pageCount || 1,
       }).catch(() => {});
-    } else {
-      await updatePlanStatus(planId, 'failed', 0, { error_message: error.message })
-        .catch((e) => console.error(`[${requestId}] failed-status update failed:`, e.message));
     }
+    // Le plan n'est pas marqué « en échec » ici : une autre tentative peut
+    // suivre. C'est la file qui tranche après la dernière (settleFailedJob).
     
     if (tmpDir) await fs.remove(tmpDir).catch(() => {});
     
@@ -241,9 +252,11 @@ async function processPage({
   safeBase,
   setPreview = true,
   requestId,
+  signal,
   supabaseClient,
   onPageProgress
 }) {
+  const stopIfAborted = () => { if (signal?.aborted) throw new Error('Traitement annulé'); };
   const name = `${safeBase}-page${pageNumber}`;
   const pagePdf = path.join(pagesDir, `${name}.pdf`);
   const outputPng = path.join(pagesDir, `${name}.png`);
@@ -252,7 +265,8 @@ async function processPage({
   
   try {
     // 1. Extract page
-    await run('qpdf', [linearizedPdf, '--pages', linearizedPdf, String(pageNumber), '--', pagePdf], { timeout: 60000 });
+    stopIfAborted();
+    await run('qpdf', [linearizedPdf, '--pages', linearizedPdf, String(pageNumber), '--', pagePdf], { timeout: 60000, signal });
     onPageProgress?.(20);
     
     // 2. Rasterize avec Ghostscript (haute résolution pour les tiles - 600 DPI)
@@ -260,6 +274,7 @@ async function processPage({
     await run(gsCommand, ['-dSAFER', '-dBATCH', '-dNOPAUSE', '-dQUIET', '-sDEVICE=png16m', '-r600', '-dBufferSpace=1000000000', `-sOutputFile=${outputPng}`, pagePdf], {
       maxBuffer: 1024 * 1024 * 100,
       timeout: 120000, // 2 minutes max par page
+      signal,
     });
     onPageProgress?.(40);
     
@@ -268,7 +283,9 @@ async function processPage({
     await run(gsCommand, ['-dSAFER', '-dBATCH', '-dNOPAUSE', '-dQUIET', '-sDEVICE=png16m', '-r150', '-dBufferSpace=500000000', `-sOutputFile=${previewPng}`, pagePdf], {
       maxBuffer: 1024 * 1024 * 50,
       timeout: 120000,
+      signal,
     });
+    stopIfAborted();
     onPageProgress?.(50);
     
     // 2.6. Upload du PNG basse résolution vers Supabase (pour affichage)
@@ -309,6 +326,7 @@ async function processPage({
       }
     }
     
+    stopIfAborted();
     // 3. Tiling avec Sharp (utilise le PNG haute résolution)
     const sharp = (await import('sharp')).default;
     
@@ -335,7 +353,8 @@ async function processPage({
     const filesDir = `${tilesBaseDir}_files`;
     const remoteTilesPath = `${projectId}/tiles/${name}`;
     
-    await uploadTilesBatch(filesDir, `${remoteTilesPath}_files`, requestId);
+    stopIfAborted();
+    await uploadTilesBatch(filesDir, `${remoteTilesPath}_files`, requestId, signal);
     
     onPageProgress?.(90);
     
@@ -358,8 +377,8 @@ async function processPage({
   } catch (error) {
     console.error(`[${requestId}] ❌ Page ${pageNumber} failed:`, error);
     
-    if (error.killed) {
-      throw new Error(`Page ${pageNumber} timeout - PDF trop complexe`);
+    if (error.killed && !signal?.aborted) {
+      throw new Error(`Page ${pageNumber} : délai dépassé, PDF trop complexe`);
     }
     
     throw error;
@@ -369,7 +388,7 @@ async function processPage({
 /**
  * Upload des tiles par batch (optimisé)
  */
-async function uploadTilesBatch(localPath, remotePrefix, requestId) {
+async function uploadTilesBatch(localPath, remotePrefix, requestId, signal) {
   console.log(`[${requestId}] 📤 Starting upload from: ${localPath}`);
   console.log(`[${requestId}] 📤 Remote prefix: ${remotePrefix}`);
   
@@ -398,6 +417,7 @@ async function uploadTilesBatch(localPath, remotePrefix, requestId) {
         console.log(`[${requestId}] 📄 Queueing file: ${remotePath}`);
         uploadPromises.push(
           limit(async () => {
+            if (signal?.aborted) throw new Error('Traitement annulé');
             const buffer = await fs.readFile(fullPath);
             console.log(`[${requestId}] ⬆️  Uploading: ${remotePath} (${buffer.length} bytes)`);
             
@@ -432,8 +452,8 @@ async function uploadTilesBatch(localPath, remotePrefix, requestId) {
 /**
  * Mettre à jour le statut du plan
  */
-async function updatePlanStatus(planId, status, progress, extraData = {}) {
-  const { data, error } = await supabase
+async function updatePlanStatus(planId, status, progress, extraData = {}, { onlyWhileProcessing = false } = {}) {
+  let query = supabase
     .from('plans')
     .update({
       status,
@@ -442,6 +462,8 @@ async function updatePlanStatus(planId, status, progress, extraData = {}) {
       updated_at: new Date().toISOString()
     })
     .eq('id', planId);
+  if (onlyWhileProcessing) query = query.in('status', ['queued', 'processing']);
+  const { data, error } = await query;
   
   if (error) {
     console.error(`Failed to update plan status:`, error);
