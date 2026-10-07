@@ -3,6 +3,7 @@ import { Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import { processPdfToTiles } from '../services/pdfProcessor.js';
 import { supabase } from '../lib/supabase.js';
+import { removePlanFiles } from '../services/planFiles.js';
 
 const QUEUE_NAME = 'pdf-processing';
 const BUCKET = 'project-plans';
@@ -24,7 +25,7 @@ export const pendingUploadPath = (projectId, planId) => `${projectId}/_uploads/$
  * chemin. Auparavant le fichier entier (jusqu'à 100 Mo) était encodé en base64
  * dans Redis, puis exposé par le tableau de bord et la route de suivi des jobs.
  */
-export async function enqueuePdf({ buffer, projectId, planId, fileName, requestId }) {
+export async function enqueuePdf({ buffer, projectId, planId, fileName, requestId, revision = null }) {
   const pdfPath = pendingUploadPath(projectId, planId);
   const { error } = await supabase.storage
     .from(BUCKET)
@@ -33,7 +34,9 @@ export async function enqueuePdf({ buffer, projectId, planId, fileName, requestI
 
   return pdfProcessingQueue.add(
     'process-pdf',
-    { pdfPath, projectId, planId, fileName, requestId },
+    // `revision` : remplacement d'un plan existant (routes/update-plan.js),
+    // avec ce qu'il faut pour revenir à l'ancienne version en cas d'échec.
+    { pdfPath, projectId, planId, fileName, requestId, ...(revision ? { revision } : {}) },
     {
       attempts: 3,
       backoff: { type: 'exponential', delay: 5000 },
@@ -54,7 +57,7 @@ async function loadPdf(data) {
 }
 
 async function processJob(job) {
-  const { projectId, planId, fileName, requestId, pdfPath } = job.data;
+  const { projectId, planId, fileName, requestId, pdfPath, revision } = job.data;
   console.log(`[${requestId}] 🔄 Worker started for ${fileName}`);
 
   const pdfBuffer = await loadPdf(job.data);
@@ -64,14 +67,56 @@ async function processJob(job) {
     planId,
     fileName,
     requestId,
-    onProgress: (progress) => job.updateProgress(progress),
+    revision,
+    onProgress: (progress) => job.updateProgress(progress).catch(() => {}),
   });
+
+  // Remplacement réussi : les tuiles et aperçus de l'ancienne version ne servent
+  // plus (l'ancien PDF est conservé, `previous_file_url` y fait référence).
+  if (revision?.previous?.tiles_path && revision.previous.tiles_path !== result.tilesPath) {
+    removePlanFiles({
+      id: planId, project_id: projectId,
+      tiles_path: revision.previous.tiles_path, pages: revision.previous.pages,
+    }).catch((e) => console.error(`[${requestId}] old tiles cleanup failed:`, e.message));
+  }
 
   // Le traitement a rangé le PDF à son emplacement définitif.
   if (pdfPath) await supabase.storage.from(BUCKET).remove([pdfPath]).catch(() => {});
 
   console.log(`[${requestId}] ✅ Worker completed`);
   return result;
+}
+
+/**
+ * Dernière tentative épuisée (ou traitement interrompu trop de fois) :
+ * le plan ne doit pas rester « en cours » indéfiniment.
+ * - premier import : le plan est marqué en échec ;
+ * - remplacement : le plan redevient utilisable avec son ancienne version.
+ */
+async function settleFailedJob(job, err) {
+  const { planId, pdfPath, revision } = job.data || {};
+  if (pdfPath) await supabase.storage.from(BUCKET).remove([pdfPath]).catch(() => {});
+  if (!planId) return;
+
+  const reason = String(err?.message || 'Traitement interrompu').slice(0, 500);
+  const patch = revision
+    ? {
+        status: 'ready',
+        processing_progress: 100,
+        error_message: `La nouvelle version n'a pas pu être traitée : ${reason}`,
+        previous_file_url: revision.previous?.previous_file_url ?? null,
+        revision_label: revision.previous?.revision_label ?? null,
+      }
+    : { status: 'failed', processing_progress: 0, error_message: reason };
+
+  // Uniquement si le plan est encore en traitement : on n'écrase pas un plan
+  // que quelqu'un aurait remplacé ou relancé entre-temps.
+  const { error } = await supabase
+    .from('plans')
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq('id', planId)
+    .in('status', ['queued', 'processing']);
+  if (error) throw error;
 }
 
 let worker = null;
@@ -95,10 +140,8 @@ export function startWorker() {
   worker.on('completed', (job) => console.log(`✅ Job ${job.id} completed`));
   worker.on('failed', async (job, err) => {
     console.error(`❌ Job ${job?.id} failed:`, err.message);
-    // Dernière tentative épuisée : on ne laisse pas le PDF en attente indéfiniment.
-    if (job?.data?.pdfPath && job.attemptsMade >= (job.opts?.attempts ?? 1)) {
-      await supabase.storage.from(BUCKET).remove([job.data.pdfPath]).catch(() => {});
-    }
+    if (!job || job.attemptsMade < (job.opts?.attempts ?? 1)) return; // une autre tentative suit
+    await settleFailedJob(job, err).catch((e) => console.error(`Job ${job.id} cleanup failed:`, e.message));
   });
   worker.on('error', (err) => console.error('❌ Worker error:', err.message));
 
