@@ -119,6 +119,10 @@ router.delete('/:planId', requireAuth, requirePlanAccess('params.planId'), async
   try {
     const planId = req.plan.id;
 
+    // À lire avant la suppression : les chemins de ses fichiers.
+    const { data: files } = await supabase
+      .from('plans').select('id, file_url, png_url, tiles_path, pages').eq('id', planId).maybeSingle();
+
     const { data: deleted, error } = await req.db.from('plans').delete().eq('id', planId).select('id');
     if (error) throw error;
     if (!deleted || deleted.length === 0) {
@@ -130,9 +134,51 @@ router.delete('/:planId', requireAuth, requirePlanAccess('params.planId'), async
     if (job) await job.remove().catch(() => {});
 
     res.json({ message: 'Plan deleted successfully' });
+
+    // Nettoyage du stockage après la réponse, sans bloquer l'utilisateur.
+    if (files) removePlanFiles(files).catch((e) => console.error(`Plan ${planId} storage cleanup failed:`, e.message));
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete plan' });
   }
 });
+
+/**
+ * Supprime du stockage le PDF, les aperçus et les tuiles d'un plan supprimé.
+ * Les anciens plans importés sous le même nom de fichier partagent leurs
+ * chemins : on ne supprime rien tant qu'un autre plan pointe sur les mêmes fichiers.
+ */
+export async function removePlanFiles(plan) {
+  const bucket = supabase.storage.from('project-plans');
+  const shared = async (column, value) => {
+    if (!value) return true;
+    const { count, error } = await supabase
+      .from('plans').select('id', { count: 'exact', head: true }).eq(column, value).neq('id', plan.id);
+    return Boolean(error) || (count ?? 0) > 0;      // dans le doute, on garde
+  };
+
+  if (plan.file_url && !(await shared('file_url', plan.file_url))) {
+    await bucket.remove([plan.file_url]);
+  }
+  if (!plan.tiles_path || (await shared('tiles_path', plan.tiles_path))) return;
+
+  // tiles_path = <projet>/tiles/<base>-page1 ; les autres pages suivent le même modèle.
+  const pages = Math.max(1, Number(plan.pages) || 1);
+  for (let page = 1; page <= pages; page++) {
+    const pagePath = plan.tiles_path.replace(/-page1$/, `-page${page}`);
+    const preview = pagePath.replace('/tiles/', '/previews/') + '.png';
+    await bucket.remove([preview, `${pagePath}.dzi`]).catch(() => {});
+
+    const root = `${pagePath}_files`;
+    const { data: levels } = await bucket.list(root, { limit: 100 });
+    for (const level of levels || []) {
+      for (;;) {
+        const { data: tiles } = await bucket.list(`${root}/${level.name}`, { limit: 1000 });
+        if (!tiles || tiles.length === 0) break;
+        const { error } = await bucket.remove(tiles.map((t) => `${root}/${level.name}/${t.name}`));
+        if (error || tiles.length < 1000) break;
+      }
+    }
+  }
+}
 
 export default router;
