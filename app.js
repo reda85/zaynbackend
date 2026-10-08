@@ -23,8 +23,10 @@ import { exec as execCallback } from "child_process";
 import uploadRoutes from "./routes/upload.js";
 import tilesRoutes from "./routes/tiles.js";
 import updatePlanRouter from "./routes/update-plan.js";
-import { pdfProcessingQueue, startWorker } from "./queues/pdfProcessingQueue.js";
-import { requireAuth, requireProjectMember, visibleAuthIds, basicAuth } from "./lib/auth.js";
+import { pdfProcessingQueue, startWorker, stopWorker } from "./queues/pdfProcessingQueue.js";
+import { startWorkerProcess, stopWorkerProcess } from "./lib/workerProcess.js";
+import { requireAuth, requireProjectMember, visibleAuthIds, visibleIds, basicAuth } from "./lib/auth.js";
+import { assetToDataUri, fetchAsset, placeholderImage } from "./lib/safeUrl.js";
 import { startReportJob, getReportJob, describeReportJob } from "./lib/reportJobs.js";
 // ========================================================================================
 // CANVAS FONT REGISTRATION
@@ -35,16 +37,24 @@ import { GlobalFonts } from "@napi-rs/canvas";
 
 import sharp from "sharp";
 
-async function optimizePhotoToJpegDataUri(url, { width = 1200, quality = 72 } = {}) {
-  const resp = await axios.get(url, {
-    responseType: "arraybuffer", timeout: 30000, maxContentLength: 50 * 1024 * 1024,
-  });
-  const jpeg = await sharp(Buffer.from(resp.data))
-    .rotate()
-    .resize({ width, fit: "inside", withoutEnlargement: true })
-    .jpeg({ quality, mozjpeg: true })
-    .toBuffer();
-  return "data:image/jpeg;base64," + jpeg.toString("base64");
+// Les images des rapports ne viennent que du stockage Supabase (lib/safeUrl.js).
+// Une adresse refusée ou illisible devient une vignette grise : elle ne doit
+// jamais être transmise telle quelle au moteur de rendu, qui irait la chercher.
+async function optimizePhotoToJpegDataUri(url, options = {}) {
+  return (await assetToDataUri(url, options)) || (await placeholderImage());
+}
+
+// Logos et photo du projet : incorporés au rapport, ou retirés s'ils pointent ailleurs.
+async function inlineProjectImages(project) {
+  if (!project) return;
+  const [picture, clientLogo, orgLogo] = await Promise.all([
+    project.picture_url ? assetToDataUri(project.picture_url, { width: 1600, quality: 78 }) : null,
+    project.client_logo_url ? assetToDataUri(project.client_logo_url, { width: 600, png: true }) : null,
+    project.organizations?.logo_url ? assetToDataUri(project.organizations.logo_url, { width: 600, png: true }) : null,
+  ]);
+  project.picture_url = picture;
+  project.client_logo_url = clientLogo;
+  if (project.organizations) project.organizations.logo_url = orgLogo;
 }
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -207,10 +217,18 @@ app.use('/fonts', (req, res, next) => {
   next();
 }, express.static(path.join(__dirname, 'fonts')));
 
-// Traitement des plans : worker intégré, sauf s'il tourne dans un service séparé (worker.js).
-if (process.env.DISABLE_INLINE_WORKER !== '1') {
+// Traitement des plans (PLAN_WORKER) :
+//   child  (défaut) : dans un processus séparé, lancé et relancé par l'API ;
+//   inline          : dans le processus de l'API (ancien comportement) ;
+//   off             : pas ici — un service `npm run worker` s'en charge.
+const PLAN_WORKER = process.env.DISABLE_INLINE_WORKER === '1'
+  ? 'off'
+  : (process.env.PLAN_WORKER || 'child').toLowerCase();
+if (PLAN_WORKER === 'inline') {
   startWorker();
-  console.log("🔄 PDF Processing Worker started");
+  console.log("🔄 PDF Processing Worker started (inline)");
+} else if (PLAN_WORKER !== 'off') {
+  startWorkerProcess();
 }
 
 // Bull Board
@@ -348,7 +366,7 @@ async function cropZoom(pdfImg, xNorm, yNorm, size = 800) {
     ctx.fillStyle = "#f0f0f0";
     ctx.fillRect(0, 0, size, size);
     ctx.fillStyle = "red";
-    ctx.font = `${FONT_SIZE}px Inter`;
+    ctx.font = "16px Inter";
     ctx.fillText("Error rendering", 10, 30);
   }
   ctx.imageSmoothingEnabled = true;
@@ -530,8 +548,7 @@ async function generateReport(body) {
         await Promise.all(
           batch.map(async (pdfUrl) => {
             try {
-              const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000, maxContentLength: 50 * 1024 * 1024 });
-              const pdfBuffer = Buffer.from(pdfResponse.data);
+              const pdfBuffer = await fetchAsset(pdfUrl);
               const pdfImg = await renderPdfPageRobust(pdfBuffer, 2.5);
               pdfCache.set(pdfUrl, pdfImg);
             } catch (error) {
@@ -596,6 +613,15 @@ async function generateReport(body) {
 
       console.log(`✅ Full-plan snapshots: ${Object.keys(fullPlanSnapshots).length} plan(s)\n`);
       console.log("⏳ Step 4/5: Generating PDF report...");
+
+      await inlineProjectImages(project);
+      // Images de planning envoyées par le client : stockage Supabase uniquement.
+      const safePlanningImages = (
+        await Promise.all(
+          (Array.isArray(planningImages) ? planningImages : []).slice(0, 40)
+            .map((url) => assetToDataUri(url, { width: 2000, quality: 80 }))
+        )
+      ).filter(Boolean);
 
       const resolvedConfig = templateConfig ? JSON.parse(JSON.stringify(templateConfig)) : {};
       resolvedConfig.header = resolvedConfig.header || {};
@@ -663,11 +689,9 @@ async function generateReport(body) {
               }
               if (plan.png_url) {
                 const rawUrl = supabase.storage.from("project-plans").getPublicUrl(plan.png_url).data.publicUrl;
-                try {
-                  planImagesByPlanId[plan.id] = await optimizePhotoToJpegDataUri(rawUrl, { width: 1600, quality: 75 });
-                } catch (e) {
-                  console.error(`   ❌ Plan ${plan.id}: image optimize failed -`, e.message);
-                }
+                const planImage = await assetToDataUri(rawUrl, { width: 1600, quality: 75 });
+                if (planImage) planImagesByPlanId[plan.id] = planImage;
+                else console.error(`   ❌ Plan ${plan.id}: image optimize failed`);
               } else {
                 console.warn(`   ⚠️  Plan ${plan.id} has no png_url — photos on this plan will show "Plan indisponible"`);
               }
@@ -708,12 +732,12 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
           customSections:    enrichedCustomSections,
           fullPlanSnapshots,
           planNames,
-          planningImages:    planningImages || [],
+          planningImages:    safePlanningImages,
           planningObservations: planningObservations || null,
           planImagesByPlanId,
           planDimensionsByPlanId,
           reportContent: {
-            planningImages:        planningImages || [],
+            planningImages:        safePlanningImages,
             planningObservations:  planningObservations || null,
             customSectionContents,
           },
@@ -785,13 +809,25 @@ app.post("/api/report",
       return res.status(400).json({ error: "Missing required parameters: projectId and selectedIds" });
     }
 
-    if (req.body.async === true) {
-      const job = startReportJob(req.user.id, () => generateReport(req.body));
+    // Le rapport est produit avec la clé service : on ne garde que les pins
+    // que l'appelant a lui-même le droit de lire.
+    let body;
+    try {
+      const ids = await visibleIds(req, 'pdf_pins', projectId, selectedIds);
+      if (ids.length === 0) return res.status(403).json({ error: "Aucun des pins demandés n'est accessible" });
+      body = { ...req.body, selectedIds: ids };
+    } catch (err) {
+      console.error("❌ report access check failed:", err.message);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+
+    if (body.async === true) {
+      const job = startReportJob(req.user.id, () => generateReport(body));
       return res.status(202).json({ jobId: job.id, status: job.status });
     }
 
     try {
-      res.json(await generateReport(req.body));
+      res.json(await generateReport(body));
     } catch (err) {
       console.error("❌ REPORT GENERATION FAILED:", err.message);
       if (!res.headersSent) {
@@ -840,8 +876,7 @@ async function generateMediaReport({ projectId, ids }) {
           let pdfImg = pdfCache.get(pdfUrl);
           if (!pdfImg) {
             try {
-              const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000, maxContentLength: 50 * 1024 * 1024 });
-              pdfImg = await renderPdfPageRobust(Buffer.from(pdfResponse.data));
+              pdfImg = await renderPdfPageRobust(await fetchAsset(pdfUrl));
               pdfCache.set(pdfUrl, pdfImg);
             } catch (error) {
               console.error(`Failed to process PDF for media ${media.id}:`, error.message);
@@ -913,10 +948,18 @@ const parseIds = (value) =>
 
 async function handleMediaReport(req, res, params) {
   const projectId = params?.projectId;
-  const ids = parseIds(params?.selectedIds);
-  if (!projectId || ids.length === 0) {
+  const requested = parseIds(params?.selectedIds);
+  if (!projectId || requested.length === 0) {
     return res.status(400).json({ error: "Missing required parameters: projectId and selectedIds" });
   }
+  let ids;
+  try {
+    ids = await visibleIds(req, 'pins_photos', projectId, requested);
+  } catch (err) {
+    console.error("media report access check failed:", err.message);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+  if (ids.length === 0) return res.status(403).json({ error: "Aucune des photos demandées n'est accessible" });
   if (params.async === true || params.async === 'true') {
     const job = startReportJob(req.user.id, () => generateMediaReport({ projectId, ids }));
     return res.status(202).json({ jobId: job.id, status: job.status });
@@ -1123,8 +1166,7 @@ app.get("/api/test-snapshot", requireAuth, requireProjectMember('query.projectId
     const filePath = pin.plans?.file_url;
     if (!filePath) return res.status(400).json({ error: "No PDF file found for this pin" });
     const pdfUrl = supabase.storage.from("project-plans").getPublicUrl(filePath).data.publicUrl;
-    const pdfResponse = await axios.get(pdfUrl, { responseType: "arraybuffer", timeout: 30000 });
-    const pdfImg = await renderPdfPageRobust(Buffer.from(pdfResponse.data));
+    const pdfImg = await renderPdfPageRobust(await fetchAsset(pdfUrl));
     if (pin.x === undefined || pin.y === undefined) {
       return res.status(400).json({ error: "Pin missing x or y coordinates", availableFields: Object.keys(pin), pinData: pin });
     }
@@ -1160,12 +1202,52 @@ app.get("/api/stats", requireAuth, async (req, res) => {
 // START
 // ========================================================================================
 
+// Erreurs d'envoi de fichier (trop volumineux, type refusé…) et erreurs non
+// prévues : toujours une réponse JSON, que les clients savent lire.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err instanceof multer.MulterError) {
+    const tooBig = err.code === "LIMIT_FILE_SIZE";
+    return res.status(tooBig ? 413 : 400).json({ error: tooBig ? "Fichier trop volumineux" : "Envoi de fichier invalide" });
+  }
+  if (err?.message === "Only PDF files are allowed") {
+    return res.status(400).json({ error: "Seuls les fichiers PDF sont acceptés" });
+  }
+  if (err?.type === "entity.too.large") return res.status(413).json({ error: "Requête trop volumineuse" });
+  if (err?.type === "entity.parse.failed") return res.status(400).json({ error: "Requête illisible" });
+  console.error("Unhandled route error:", err?.stack || err);
+  res.status(500).json({ error: "Internal server error" });
+});
+
+// Une promesse rejetée sans gestionnaire ne doit pas arrêter l'API.
+process.on("unhandledRejection", (reason) => {
+  console.error("⚠️  Unhandled rejection:", reason?.stack || reason);
+});
+
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`PDF report server running on port ${PORT}`);
   console.log(`Node version: ${process.version}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
 });
 
-process.on("SIGTERM", () => { console.log("SIGTERM received"); process.exit(0); });
-process.on("SIGINT",  () => { console.log("SIGINT received");  process.exit(0); });
+// Arrêt propre : on cesse d'accepter des requêtes, on laisse quelques secondes
+// à celles en cours et au worker, puis on sort.
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} received, shutting down...`);
+  const force = setTimeout(() => process.exit(0), 9000);
+  force.unref();
+  const closed = new Promise((resolve) => server.close(resolve));
+  server.closeIdleConnections?.();
+  await Promise.allSettled([
+    closed,
+    stopWorkerProcess(),
+    PLAN_WORKER === 'inline' ? stopWorker() : Promise.resolve(),
+  ]);
+  process.exit(0);
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT",  () => shutdown("SIGINT"));
