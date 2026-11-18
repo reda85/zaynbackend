@@ -509,7 +509,8 @@ async function generateReport(body) {
           .select(`*, categories(*), Status(*), assigned_to(*), created_by(*), projects(*), pins_photos(*), plans(file_url), comments(*, username, created_at)`)
           .eq("project_id", projectId)
           .in("id", ids),
-        supabase.from("categories").select("*").eq("project_id", projectId),
+        // Lots avec leur entreprise titulaire (affichée dans le rapport).
+        supabase.from("categories").select("*, entreprises(name)").eq("project_id", projectId),
         supabase.from("Status").select("*").eq("project_id", projectId),
         supabase.from("projects").select("*,organizations(*)").eq("id", projectId).single(),
       ]);

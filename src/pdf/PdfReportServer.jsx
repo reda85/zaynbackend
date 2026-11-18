@@ -61,7 +61,7 @@ export const pdfIconsMap = {
   "fire-extinguisher": path.join(projectRoot, "icons/fire-extinguisher-white.png"),
   "carrelage":         path.join(projectRoot, "icons/grid-white.png"),
   "unassigned":        path.join(projectRoot, "icons/check-white.png"),
-  "doors":             path.join(projectRoot, "icons/door-white.png"),
+  "doors":             path.join(projectRoot, "icons/door-closed-white.png"),
   "snowflake":         path.join(projectRoot, "icons/snowflake-white.png"),
   "folder":            path.join(projectRoot, "icons/folder-white.png"),
   "air-vent":          path.join(projectRoot, "icons/air-vent-white.png"),
@@ -301,7 +301,7 @@ const TableView = ({ selectedPins, categories, statuses, fields, config, fontFam
         {config?.tableView?.showIndex && <TableCell config={config} fontFamily={fontFamily} header width="5%">#</TableCell>}
         <TableCell config={config} fontFamily={fontFamily} header width="30%">Tâche</TableCell>
         <TableCell config={config} fontFamily={fontFamily} header width="8%">ID</TableCell>
-        {fields.category   && <TableCell config={config} fontFamily={fontFamily} header width="10%">Catégorie</TableCell>}
+        {fields.category   && <TableCell config={config} fontFamily={fontFamily} header width="10%">Lot</TableCell>}
         {fields.status     && <TableCell config={config} fontFamily={fontFamily} header width="12%">Statut</TableCell>}
         {fields.assignedTo && <TableCell config={config} fontFamily={fontFamily} header width="12%">Assigné à</TableCell>}
         {fields.dueDate    && <TableCell config={config} fontFamily={fontFamily} header width="12%">Échéance</TableCell>}
@@ -375,8 +375,11 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
                   </View>
                   {fields.category && pin.category_id && (
                     <View style={{ flexDirection: "row", marginVertical: 2 }}>
-                      <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Catégorie:</Text>
-                      <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{category?.name || "-"}</Text>
+                      <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Lot:</Text>
+                      <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>
+                        {category?.name || "-"}
+                        {category?.entreprises?.name ? ` · ${category.entreprises.name}` : ""}
+                      </Text>
                     </View>
                   )}
                   {fields.createdBy && (
