@@ -906,7 +906,56 @@ const CoverTitle = ({ config, primaryColor, projectName, fontFamily }) => {
   );
 };
 
-const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionTitles }) => {
+// Lot(s) et entreprise(s) d'un rapport par lot : « Lot : GO / Étanchéité »,
+// « Entreprise : … ». En grand sur la page de garde, en bandeau sinon.
+const scopeText = (scopeLots) => {
+  const lots = scopeLots.map((l) => l.name).filter(Boolean);
+  const companies = [...new Set(scopeLots.map((l) => l.company).filter(Boolean))];
+  return {
+    lotLabel: lots.length > 1 ? "Lots" : "Lot",
+    lots: lots.join(" / "),
+    companyLabel: companies.length > 1 ? "Entreprises" : "Entreprise",
+    companies: companies.join(" / "),
+  };
+};
+
+const CoverScope = ({ scopeLots, primaryColor, align, fontFamily }) => {
+  if (!scopeLots?.length) return null;
+  const t = scopeText(scopeLots);
+  const textAlign = align === 'center' ? 'center' : align === 'right' ? 'right' : 'left';
+  const row = (label, value) => (
+    <View style={{ marginBottom: 10 }}>
+      <Text style={{ fontSize: 9, fontWeight: "bold", color: primaryColor, letterSpacing: 1.2, textTransform: "uppercase", textAlign, fontFamily }}>{label}</Text>
+      <Text style={{ fontSize: 17, fontWeight: "bold", color: "#292524", marginTop: 3, lineHeight: 1.3, textAlign, fontFamily }}>{value}</Text>
+    </View>
+  );
+  return (
+    <View style={{ marginTop: -16, marginBottom: 32 }}>
+      {row(t.lotLabel, t.lots)}
+      {t.companies ? row(t.companyLabel, t.companies) : null}
+    </View>
+  );
+};
+
+const ScopeBanner = ({ scopeLots, primaryColor, fontFamily }) => {
+  const t = scopeText(scopeLots);
+  return (
+    <View wrap={false} style={{ flexDirection: "row", flexWrap: "wrap", gap: 18, paddingVertical: 10, paddingHorizontal: 14, marginBottom: 10, borderRadius: 6, borderLeftWidth: 4, borderLeftColor: primaryColor, backgroundColor: "#f5f5f4" }}>
+      <View style={{ flexGrow: 1, flexBasis: 0 }}>
+        <Text style={{ fontSize: 7.5, fontWeight: "bold", color: primaryColor, textTransform: "uppercase", letterSpacing: 1, fontFamily }}>{t.lotLabel}</Text>
+        <Text style={{ fontSize: 11, fontWeight: "bold", color: "#292524", marginTop: 2, fontFamily }}>{t.lots}</Text>
+      </View>
+      {t.companies ? (
+        <View style={{ flexGrow: 1, flexBasis: 0 }}>
+          <Text style={{ fontSize: 7.5, fontWeight: "bold", color: primaryColor, textTransform: "uppercase", letterSpacing: 1, fontFamily }}>{t.companyLabel}</Text>
+          <Text style={{ fontSize: 11, fontWeight: "bold", color: "#292524", marginTop: 2, fontFamily }}>{t.companies}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+};
+
+const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionTitles, scopeLots = [] }) => {
   if (!config?.coverPage?.enabled) return null;
   const primaryColor    = config?.primaryColor || "#44403c";
   const logoSizeMap     = { small: { width: 80, height: 56 }, medium: { width: 112, height: 80 }, large: { width: 144, height: 96 } };
@@ -944,6 +993,7 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
 
         {/* Title */}
         <CoverTitle config={config} primaryColor={primaryColor} projectName={selectedProject?.name} fontFamily={fontFamily} />
+        <CoverScope scopeLots={scopeLots} primaryColor={(config?.coverPage?.titleColor || 'primary') === 'custom' ? (config.coverPage.titleCustomColor || primaryColor) : primaryColor} align={config?.coverPage?.titleAlign} fontFamily={fontFamily} />
 
         {/* Project photo */}
         {config.coverPage?.showProjectPhoto && projectPhotoUrl && (
@@ -1029,6 +1079,7 @@ export default function PdfReportServer({
   planningObservations = null,
   progressContent      = null,  // { workforce: [{ name, lots, count }], workforceDate, conclusion } (rapport d'avancement)
   milestones          = [],   // jalons du planning (rapport d'avancement)
+  scopeLots           = [],   // rapport par lot(s) : [{ name, company }]
   // ── Nécessaires pour le mode "Photos localisées" ──
   planImagesByPlanId    = {},  // { [plan_id]: url image brute complète du plan (plans.png_url) }
   planDimensionsByPlanId = {}, // { [plan_id]: { width, height } } (plans.width / plans.height)
@@ -1043,7 +1094,9 @@ export default function PdfReportServer({
   const progressOpts      = { lots: true, attention: true, milestones: true, gantt: true, ganttTasks: true, photos: true, workforce: true, conclusion: true, planOverviews: false, ...(templateConfig.progress || {}) };
   const progressModel     = isProgress ? buildProgress({ categories, pins: selectedPins, milestones, statuses }) : null;
   const sectionOrder      = (() => {
-    const base = templateConfig.sectionOrder || DEFAULT_SECTION_ORDER;
+    const declared = templateConfig.sectionOrder || DEFAULT_SECTION_ORDER;
+    // Sans page de garde, le lot du rapport ouvre la première page.
+    const base = scopeLots.length && !templateConfig.coverPage?.enabled ? ['scope', ...declared] : declared;
     if (!isProgress) return base;
     const extra = ["progressLots", "progressAttention", "progressMilestones", "progressWorkforce", "gantt"].filter((id) => !base.includes(id));
     const at = base.indexOf("summary") + 1;
@@ -1237,6 +1290,9 @@ export default function PdfReportServer({
             <AttentionList model={progressModel} categories={categories} fontFamily={fontFamily} />
           </View>
         );
+
+      case 'scope':
+        return <ScopeBanner key="scope" scopeLots={scopeLots} primaryColor={primaryColor} fontFamily={fontFamily} />;
 
       case 'progressWorkforce': {
         const rows = progressContent?.workforce || [];
@@ -1565,7 +1621,7 @@ if (sectionId === 'planning') {
 
   return (
     <Document>
-      <CoverPage selectedProject={selectedProject} config={templateConfig} participants={participants} fontFamily={fontFamily} sectionTitles={sectionTitles} />
+      <CoverPage selectedProject={selectedProject} config={templateConfig} participants={participants} fontFamily={fontFamily} sectionTitles={sectionTitles} scopeLots={scopeLots} />
 
       {runs.map((run, runIndex) => {
         if (run.type === 'page') return run.page
