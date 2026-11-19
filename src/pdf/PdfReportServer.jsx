@@ -9,7 +9,7 @@ import { dirname } from 'path';
 import RichTextPdfRenderer from './RichTextPdfrenderer.jsx';
 import {
   buildProgress, ProgressSummary, LotsTable, MilestonesList, AttentionList,
-  Gantt, ganttRows, ganttRange, paginateGantt, SectionTitle,
+  Gantt, ganttRows, ganttRange, paginateGantt, SectionTitle, photoReport, PhotoProgressPage, WorkforceTable,
 } from './ProgressSections.jsx';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1027,6 +1027,7 @@ export default function PdfReportServer({
   planNames           = {},
   planningImages      = [],
   planningObservations = null,
+  progressContent      = null,  // { workforce: [{ name, lots, count }], workforceDate, conclusion } (rapport d'avancement)
   milestones          = [],   // jalons du planning (rapport d'avancement)
   // ── Nécessaires pour le mode "Photos localisées" ──
   planImagesByPlanId    = {},  // { [plan_id]: url image brute complète du plan (plans.png_url) }
@@ -1039,14 +1040,22 @@ export default function PdfReportServer({
   // Rapport d'avancement : synthèse, lots, retards, jalons et planning se
   // placent après le résumé, avant le détail des tâches.
   const isProgress        = templateConfig.reportKind === "avancement";
-  const progressOpts      = { lots: true, attention: true, milestones: true, gantt: true, ganttTasks: true, planOverviews: false, ...(templateConfig.progress || {}) };
+  const progressOpts      = { lots: true, attention: true, milestones: true, gantt: true, ganttTasks: true, photos: true, workforce: true, conclusion: true, planOverviews: false, ...(templateConfig.progress || {}) };
   const progressModel     = isProgress ? buildProgress({ categories, pins: selectedPins, milestones, statuses }) : null;
   const sectionOrder      = (() => {
     const base = templateConfig.sectionOrder || DEFAULT_SECTION_ORDER;
     if (!isProgress) return base;
-    const extra = ["progressLots", "progressAttention", "progressMilestones", "gantt"].filter((id) => !base.includes(id));
+    const extra = ["progressLots", "progressAttention", "progressMilestones", "progressWorkforce", "gantt"].filter((id) => !base.includes(id));
     const at = base.indexOf("summary") + 1;
-    return [...base.slice(0, at), ...extra, ...base.slice(at)];
+    const order = [...base.slice(0, at), ...extra, ...base.slice(at)];
+    // Le reportage photo suit le pointage des tâches, comme dans les rapports
+    // d'état d'avancement des bureaux de suivi.
+    if (!order.includes("progressPhotos")) {
+      const after = order.indexOf("tasks");
+      order.splice(after >= 0 ? after + 1 : order.length, 0, "progressPhotos");
+    }
+    // Recommandations et conclusion ferment le rapport.
+    return [...order.filter((id) => id !== "progressConclusion"), "progressConclusion"];
   })();
   const pinsByStatus      = groupBy(selectedPins, "status_id");
   const actualDisplayMode = templateConfig.tasks?.displayMode || displayMode;
@@ -1072,7 +1081,7 @@ export default function PdfReportServer({
 
   const headerProps = { templateConfig, selectedProject, primaryColor, fontFamily, hasLogo, hasClientLogo, logoH, clientLogoH };
 
-  const OWN_PAGE_SECTIONS = new Set(['participants', 'signatures', 'planOverviews', 'planning', 'gantt'])
+  const OWN_PAGE_SECTIONS = new Set(['participants', 'signatures', 'planOverviews', 'planning', 'gantt', 'progressPhotos'])
 
   // Groupes de la section éléments (tasks.groupBy) : lot, statut, plan ou aucun.
   const taskGroups = (() => {
@@ -1229,6 +1238,37 @@ export default function PdfReportServer({
           </View>
         );
 
+      case 'progressWorkforce': {
+        const rows = progressContent?.workforce || [];
+        if (!isProgress || !progressOpts.workforce || !rows.length) return null;
+        const when = progressContent.workforceDate || templateConfig.period?.end || null;
+        return (
+          // Tableau court : il reste avec son titre.
+          <View key="progressWorkforce" wrap={rows.length > 14}>
+            <SectionTitle
+              title="Effectifs de site"
+              sub={when ? `Personnel présent sur le chantier le ${String(when).slice(8, 10)}/${String(when).slice(5, 7)}/${String(when).slice(0, 4)}` : "Personnel présent sur le chantier"}
+              titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)}
+              fontFamily={fontFamily}
+            />
+            <WorkforceTable rows={rows} primaryColor={primaryColor} fontFamily={fontFamily} />
+          </View>
+        );
+      }
+
+      case 'progressConclusion': {
+        const doc = progressContent?.conclusion;
+        if (!isProgress || !progressOpts.conclusion || !hasRichTextContent(doc)) return null;
+        return (
+          <View key="progressConclusion" style={{ marginTop: 10 }}>
+            <SectionTitle title="Recommandations et conclusion" titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)} fontFamily={fontFamily} />
+            <View style={{ marginTop: 6 }}>
+              <RichTextPdfRenderer content={doc} fontFamily={fontFamily} primaryColor={primaryColor} />
+            </View>
+          </View>
+        );
+      }
+
       case 'progressMilestones':
         if (!isProgress || !progressOpts.milestones || !progressModel.jalons.length) return null;
         return (
@@ -1239,6 +1279,9 @@ export default function PdfReportServer({
         );
 
       case 'customSections':
+        // Rien à écrire : pas de page blanche (le reportage photo, en pages
+        // propres, peut précéder les sections personnalisées).
+        if (!customSections.some((cs) => hasRichTextContent(cs.content))) return null;
         return <CustomSectionsView key="customSections" customSections={customSections} primaryColor={primaryColor} fontFamily={fontFamily} sectionTitles={sectionTitles} />;
 
       default:
@@ -1265,6 +1308,38 @@ export default function PdfReportServer({
             <Text style={textStyle}>Planning{pages.length > 1 ? ` (${i + 1}/${pages.length})` : ''}</Text>
           </View>
           <Gantt rows={pageRows} range={range} model={progressModel} width={PAGE_W - 64} primaryColor={primaryColor} fontFamily={fontFamily} />
+        </Page>
+      ));
+    }
+
+    if (sectionId === 'progressPhotos') {
+      if (!isProgress || !progressOpts.photos) return null;
+      const items = photoReport(progressModel);
+      if (!items.length) return null;
+      const PAGE_W = 842, PAGE_H = 595;
+      const bodyH = PAGE_H - paddingTop - paddingBottom - 70 /* titre et nom de la tâche */;
+      const { containerStyle, textStyle } = getSectionTitleStyle(sectionTitles, primaryColor, fontFamily);
+      return items.map((item, i) => (
+        <Page key={`photo-${i}`} size="A4" orientation="landscape" style={pageStyle}>
+          {showHeader && <PageHeader {...headerProps} />}
+          {showFooter && <PageFooter templateConfig={templateConfig} selectedProject={selectedProject} fontFamily={fontFamily} />}
+          <View style={{ ...containerStyle, marginBottom: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' }}>
+            <Text style={textStyle}>Reportage photo</Text>
+            <Text style={{ fontSize: 8, color: '#78716c', fontFamily }}>{i + 1} / {items.length}</Text>
+          </View>
+          <Text style={{ fontSize: 11, fontWeight: 'bold', color: '#292524', marginBottom: 8, fontFamily }}>
+            {item.task.name || 'Tâche'}
+            <Text style={{ fontWeight: 'normal', color: '#78716c' }}>{item.lot ? `  ·  ${item.lot.name}` : ''}</Text>
+          </Text>
+          <PhotoProgressPage
+            item={item}
+            width={PAGE_W - 64}
+            height={bodyH}
+            planImagesByPlanId={planImagesByPlanId}
+            planDimensionsByPlanId={planDimensionsByPlanId}
+            primaryColor={primaryColor}
+            fontFamily={fontFamily}
+          />
         </Page>
       ));
     }
