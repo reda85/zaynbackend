@@ -53,6 +53,9 @@ const fontFamilyMap = {
 
 const DEFAULT_SECTION_ORDER = ['summary', 'planOverviews', 'planning', 'participants', 'signatures', 'tasks', 'customSections']
 
+// Nature d'un élément (pdf_pins.type).
+const PIN_TYPE_LABELS = { reserve: "Réserve", tache: "Tâche", observation: "Observation" }
+
 export const pdfIconsMap = {
   "grid":              path.join(projectRoot, "icons/grid-white.png"),
   "zap":               path.join(projectRoot, "icons/zap-white.png"),
@@ -373,6 +376,12 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
                     <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>ID:</Text>
                     <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{pin.projects?.project_number}-{pin.pin_number}</Text>
                   </View>
+                  {pin.type && (
+                    <View style={{ flexDirection: "row", marginVertical: 2 }}>
+                      <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Nature:</Text>
+                      <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{PIN_TYPE_LABELS[pin.type] ?? pin.type}</Text>
+                    </View>
+                  )}
                   {fields.category && pin.category_id && (
                     <View style={{ flexDirection: "row", marginVertical: 2 }}>
                       <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Lot:</Text>
