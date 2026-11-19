@@ -537,7 +537,10 @@ async function generateReport(body, user = null) {
         reportTitle, participants, planningImages, planningObservations, customSections,
         reportKind, templateKind, progress, period: rawPeriod, templateId,
         progressContent: rawProgressContent,
+        lotIds: rawLotIds,
       } = body;
+      // Rapport par lot(s) : seuls leurs éléments, et leurs noms en page de garde.
+      const lotIds = new Set((Array.isArray(rawLotIds) ? rawLotIds : []).slice(0, 200).map(String));
       // Période couverte (dates « AAAA-MM-JJ »), affichée et gardée dans l'historique.
       const period = rawPeriod && (isDay(rawPeriod.start) || isDay(rawPeriod.end))
         ? { start: isDay(rawPeriod.start) ? rawPeriod.start : null, end: isDay(rawPeriod.end) ? rawPeriod.end : null }
@@ -582,16 +585,24 @@ async function generateReport(body, user = null) {
       if (statusesResult.error) throw statusesResult.error;
       if (projectResult.error) throw projectResult.error;
 
+      const allCategories = categoriesResult.data || [];
+      const scopedLots = lotIds.size ? allCategories.filter((c) => lotIds.has(String(c.id))) : [];
+      const inScope = (lotId) => !scopedLots.length || lotIds.has(String(lotId));
       const pins = (pinsResult.data || [])
         .filter((p) => !kindPinType || (p.type || "reserve") === kindPinType)
+        .filter((p) => inScope(p.category_id))
         .sort((a, b) => (a.pin_number ?? 0) - (b.pin_number ?? 0));
-      const categories = categoriesResult.data;
+      const categories = scopedLots.length ? scopedLots : allCategories;
+      if (scopedLots.length) milestones = milestones.filter((m) => m.lot_id && inScope(m.lot_id));
+      const scopeLots = scopedLots
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+        .map((c) => ({ name: c.name, company: c.entreprises?.name || null }));
       const statuses = statusesResult.data;
       const project = projectResult.data;
 
       if (!pins || pins.length === 0) {
         const err = new Error(kindPinType
-          ? `Aucune ${REPORT_KINDS[kind].label} dans la sélection`
+          ? `Aucune ${REPORT_KINDS[kind].label} dans la sélection${scopedLots.length ? " pour ce(s) lot(s)" : ""}`
           : "No pins found for the given criteria");
         err.status = 422;
         throw err;
@@ -822,6 +833,7 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
           planningObservations: planningObservations || null,
           progressContent:   kind === "avancement" ? cleanProgressContent(rawProgressContent) : null,
           milestones,
+          scopeLots,
           planImagesByPlanId,
           planDimensionsByPlanId,
           reportContent: {
@@ -847,7 +859,9 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
       const safeProjectName = (project?.name || 'projet')
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '');
       const day = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Casablanca' });
-      const fileName = `${REPORT_FILE_PREFIX[kind]}_${safeProjectName}_${day}.pdf`;
+      const slug = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+      const lotPart = scopeLots.length === 1 ? `_Lot_${slug(scopeLots[0].name).slice(0, 40)}` : scopeLots.length > 1 ? `_${scopeLots.length}_lots` : '';
+      const fileName = `${REPORT_FILE_PREFIX[kind]}_${safeProjectName}${lotPart}_${day}.pdf`;
       const storagePath = `generated/${projectId}/${timestamp}_${fileName}`;
 
       const { error: uploadError } = await supabase.storage
@@ -877,7 +891,11 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
       console.log(`✅ PDF uploaded and signed in ${duration}s — ${storagePath}\n`);
 
       const reportId = await recordReport({
-        user, project, projectId, kind, title: finalConfig.reportTitle, storagePath, fileName,
+        user, project, projectId, kind,
+        title: scopeLots.length
+          ? `${finalConfig.reportTitle} — ${/^lots?\b/i.test(scopeLots[0].name) ? "" : scopeLots.length > 1 ? "Lots " : "Lot "}${scopeLots.map((l) => l.name).join(" / ")}`.slice(0, 300)
+          : finalConfig.reportTitle,
+        storagePath, fileName,
         fileSize: pdfBuffer.length, itemCount: pins.length, period, templateId,
       });
 
