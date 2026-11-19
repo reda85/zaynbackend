@@ -458,6 +458,12 @@ const ListView = ({ selectedPins, categories, statuses, fields: rawFields, confi
                       <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{pin.assigned_to?.name || "-"}</Text>
                     </View>
                   )}
+                  {fields.planning && (
+                    <View style={{ flexDirection: "row", marginVertical: 2 }}>
+                      <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Début:</Text>
+                      <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{fmtDay(pin.date_debut)}</Text>
+                    </View>
+                  )}
                   {fields.dueDate && (
                     <View style={{ flexDirection: "row", alignItems: "center", marginVertical: 2 }}>
                       <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Échéance:</Text>
@@ -467,10 +473,6 @@ const ListView = ({ selectedPins, categories, statuses, fields: rawFields, confi
                   )}
                   {fields.planning && (
                     <>
-                      <View style={{ flexDirection: "row", marginVertical: 2 }}>
-                        <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Début:</Text>
-                        <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{fmtDay(pin.date_debut)}</Text>
-                      </View>
                       <View style={{ flexDirection: "row", alignItems: "center", marginVertical: 2 }}>
                         <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Avancement:</Text>
                         <ProgressCell value={pin.avancement} fontFamily={fontFamily} width={60} color={primaryColor} />
