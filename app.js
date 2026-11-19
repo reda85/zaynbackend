@@ -28,6 +28,7 @@ import { startWorkerProcess, stopWorkerProcess } from "./lib/workerProcess.js";
 import { requireAuth, requireProjectMember, visibleAuthIds, visibleIds, basicAuth } from "./lib/auth.js";
 import { assetToDataUri, fetchAsset, placeholderImage } from "./lib/safeUrl.js";
 import { startReportJob, getReportJob, describeReportJob } from "./lib/reportJobs.js";
+import { REPORT_KINDS, reportKindOf, applyReportKind } from "./lib/reportKinds.js";
 // ========================================================================================
 // CANVAS FONT REGISTRATION
 // @napi-rs/canvas does NOT use system fonts on Linux by default.
@@ -495,7 +496,11 @@ async function generateReport(body) {
       const {
         projectId, selectedIds, fields, displayMode, templateConfig,
         reportTitle, participants, planningImages, planningObservations, customSections,
+        reportKind, templateKind,
       } = body;
+      // Type de rapport : il ne garde que les éléments de sa nature.
+      const kind = reportKindOf(reportKind);
+      const kindPinType = REPORT_KINDS[kind].pinType;
 
       const ids = selectedIds;
       console.log(`\n${"=".repeat(80)}`);
@@ -520,12 +525,20 @@ async function generateReport(body) {
       if (statusesResult.error) throw statusesResult.error;
       if (projectResult.error) throw projectResult.error;
 
-      const pins = pinsResult.data;
+      const pins = (pinsResult.data || [])
+        .filter((p) => !kindPinType || (p.type || "reserve") === kindPinType)
+        .sort((a, b) => (a.pin_number ?? 0) - (b.pin_number ?? 0));
       const categories = categoriesResult.data;
       const statuses = statusesResult.data;
       const project = projectResult.data;
 
-      if (!pins || pins.length === 0) throw new Error("No pins found for the given criteria");
+      if (!pins || pins.length === 0) {
+        const err = new Error(kindPinType
+          ? `Aucune ${REPORT_KINDS[kind].label} dans la sélection`
+          : "No pins found for the given criteria");
+        err.status = 422;
+        throw err;
+      }
 
       console.log(`✅ Data fetched: ${pins.length} pins\n`);
       console.log("⏳ Step 2/5: Processing PDFs...");
@@ -629,9 +642,10 @@ async function generateReport(body) {
       resolvedConfig.header.logoUrl       = project?.organizations?.logo_url || '';
       resolvedConfig.header.clientLogoUrl = project?.client_logo_url         || '';
 
-      const finalConfig = reportTitle
-        ? { ...resolvedConfig, reportTitle }
-        : resolvedConfig;
+      const kindConfig = applyReportKind(resolvedConfig, kind, templateKind);
+      const finalConfig = { ...kindConfig, reportKind: kind, ...(reportTitle ? { reportTitle } : {}) };
+      // Le mode choisi à la composition l'emporte sur celui du modèle.
+      if (displayMode) finalConfig.tasks = { ...(finalConfig.tasks || {}), displayMode };
 
       // ── Normalize customSections (accept array or object form) ──
       let customSectionContents = {};
@@ -832,7 +846,7 @@ app.post("/api/report",
     } catch (err) {
       console.error("❌ REPORT GENERATION FAILED:", err.message);
       if (!res.headersSent) {
-        res.status(500).json({
+        res.status(err.status || 500).json({
           error: err.message || "Internal server error",
           details: process.env.NODE_ENV === "development" ? err.stack : undefined,
         });
