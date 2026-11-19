@@ -3,7 +3,7 @@
 // (lib/data/lots.js, lib/data/planning.js) pour que le rapport dise la même
 // chose que l'application.
 import React from "react";
-import { Text, View } from "@react-pdf/renderer";
+import { Image, Text, View } from "@react-pdf/renderer";
 
 const TZ = "Africa/Casablanca";
 const DAY = 86400000;
@@ -424,6 +424,103 @@ export const Gantt = ({ rows, range, model, width, primaryColor, fontFamily }) =
           <Text style={{ fontSize: 7, color: "#57534e", fontFamily }}>Aujourd'hui ({fmtD(model.today)})</Text>
         </View>
       </View>
+    </View>
+  );
+};
+
+// ── Reportage photo ──────────────────────────────────────────────────────────
+// Une page par tâche : la photo la plus récente, ce qu'elle illustre (tâche,
+// lot, avancement, légende, date) et, si on sait où elle a été prise, le plan
+// avec l'emplacement. Comme les rapports d'état d'avancement des bureaux de
+// suivi : « Les travaux de … sont achevés à 70 % ».
+
+/** Tâches illustrées : celles qui ont au moins une photo, dans l'ordre des lots. */
+export function photoReport(model) {
+  const latest = (photos) =>
+    [...(photos || [])]
+      .filter((ph) => ph?.public_url && !ph.deleted_at)
+      .sort((a, b) => String(b.date || b.created_at || "").localeCompare(String(a.date || a.created_at || "")))[0];
+  const items = [];
+  for (const l of model.lots) {
+    for (const t of l.tasks) {
+      const photo = latest(t.pins_photos);
+      if (photo) items.push({ task: t, lot: l, photo });
+    }
+  }
+  for (const t of model.orphanTasks) {
+    const photo = latest(t.pins_photos);
+    if (photo) items.push({ task: t, lot: null, photo });
+  }
+  return items;
+}
+
+/** Emplacement : celui de la photo s'il est connu, sinon celui de la tâche. */
+const photoSpot = ({ photo, task }) =>
+  photo.plan_id && photo.plan_x != null && photo.plan_y != null
+    ? { planId: photo.plan_id, x: photo.plan_x, y: photo.plan_y }
+    : task.plan_id && task.x != null && task.y != null
+      ? { planId: task.plan_id, x: task.x, y: task.y }
+      : null;
+
+const fitBox = (dims, maxW, maxH) => {
+  if (!dims?.width || !dims?.height) return { w: maxW, h: maxH };
+  const r = dims.width / dims.height;
+  return maxW / maxH > r ? { w: maxH * r, h: maxH } : { w: maxW, h: maxW / r };
+};
+
+export const PhotoProgressPage = ({ item, width, height, planImagesByPlanId = {}, planDimensionsByPlanId = {}, primaryColor, fontFamily }) => {
+  const { task, lot, photo } = item;
+  const spot = photoSpot(item);
+  const planImage = spot ? planImagesByPlanId[spot.planId] : null;
+  const GAP = 16;
+  const colW = planImage ? (width - GAP) / 2 : width * 0.62;
+  const planBox = planImage ? fitBox(planDimensionsByPlanId[spot.planId], colW - 16, height - 16) : null;
+  const photoH = height - 92;
+  const late = task.late;
+  const verb = task.progress >= 100 ? "sont achevés à" : task.progress > 0 ? "sont réalisés à" : "ne sont pas encore engagés :";
+  const takenOn = toDay(photo.date || photo.created_at);
+
+  const caption = (
+    <View style={{ borderTopWidth: 1, borderTopColor: "#e7e5e4", paddingTop: 8, marginTop: 8 }}>
+      <Text style={{ fontSize: 10.5, color: "#292524", lineHeight: 1.4, fontFamily }}>
+        {photo.description ? `${photo.description} — ` : ""}Les travaux « {task.name || "Tâche"} » {verb}{" "}
+        <Text style={{ fontWeight: "bold", color: task.progress >= 100 ? "#15803d" : late ? "#b91c1c" : "#292524" }}>{task.progress}{"\u00a0%"}</Text>.
+      </Text>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 6 }}>
+        <Bar value={task.progress} width={120} height={6} color={late ? "#b91c1c" : primaryColor} />
+        <Text style={{ fontSize: 8, color: "#78716c", fontFamily }}>
+          {lot ? `${lot.name}${lot.company ? ` · ${lot.company}` : ""}  ·  ` : ""}
+          {task.start || task.end ? `du ${fmtD(task.start)} au ${fmtD(task.end)}` : ""}
+          {late ? `  ·  ${task.lateDays} j de retard` : ""}
+        </Text>
+      </View>
+      {takenOn ? <Text style={{ fontSize: 7.5, color: "#a8a29e", marginTop: 4, fontFamily }}>Photo du {fmtD(takenOn)}</Text> : null}
+    </View>
+  );
+
+  return (
+    <View style={{ flexDirection: "row", gap: GAP, height }}>
+      {planImage ? (
+        <View style={{ width: colW, height, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#e7e5e4", borderRadius: 4 }}>
+          <View style={{ width: planBox.w, height: planBox.h, position: "relative" }}>
+            <Image src={planImage} style={{ position: "absolute", left: 0, top: 0, width: planBox.w, height: planBox.h }} />
+            {/* Point de prise de vue */}
+            <View style={{ position: "absolute", left: spot.x * planBox.w - 14, top: spot.y * planBox.h - 14, width: 28, height: 28, borderRadius: 14, backgroundColor: "#dc2626", opacity: 0.22 }} />
+            <View style={{ position: "absolute", left: spot.x * planBox.w - 7, top: spot.y * planBox.h - 7, width: 14, height: 14, borderRadius: 7, backgroundColor: "#dc2626", borderWidth: 2, borderColor: "white" }} />
+          </View>
+        </View>
+      ) : null}
+      <View style={{ width: colW, height }}>
+        <Image src={photo.public_url} style={{ width: colW, height: photoH, objectFit: "cover", borderRadius: 4 }} />
+        {caption}
+      </View>
+      {!planImage ? (
+        <View style={{ flex: 1, paddingTop: 4 }}>
+          <Text style={{ fontSize: 26, fontWeight: "bold", color: task.progress >= 100 ? "#15803d" : late ? "#b91c1c" : "#292524", fontFamily }}>{task.progress}{"\u00a0%"}</Text>
+          <Text style={{ fontSize: 8, color: "#78716c", fontFamily }}>d'avancement</Text>
+          <Text style={{ fontSize: 8, color: "#a8a29e", marginTop: 14, fontFamily }}>Emplacement non renseigné</Text>
+        </View>
+      ) : null}
     </View>
   );
 };

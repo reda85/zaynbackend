@@ -690,7 +690,7 @@ async function generateReport(body, user = null) {
       const finalConfig = { ...kindConfig, reportKind: kind, ...(reportTitle ? { reportTitle } : {}), ...(period ? { period } : {}) };
       // Contenu du rapport d'avancement choisi à la composition.
       if (progress && typeof progress === "object") {
-        const allowed = ["lots", "attention", "milestones", "gantt", "ganttTasks", "planOverviews", "details"];
+        const allowed = ["lots", "attention", "milestones", "gantt", "ganttTasks", "photos", "planOverviews", "details"];
         finalConfig.progress = {
           ...(finalConfig.progress || {}),
           ...Object.fromEntries(allowed.filter((k) => typeof progress[k] === "boolean").map((k) => [k, progress[k]])),
@@ -729,8 +729,11 @@ async function generateReport(body, user = null) {
       let planImagesByPlanId = {};
       let planDimensionsByPlanId = {};
 
-      if (effectiveDisplayMode === "localizedPhotos") {
-        console.log("⏳ Step 3c/5: Preparing plan data for 'Photos localisées'...");
+      // Le reportage photo du rapport d'avancement situe aussi chaque photo
+      // (ou, à défaut, sa tâche) sur son plan.
+      const progressPhotos = kind === "avancement" && finalConfig?.progress?.photos !== false;
+      if (effectiveDisplayMode === "localizedPhotos" || progressPhotos) {
+        console.log("⏳ Step 3c/5: Preparing plan data for localized photos...");
 
         const planIds = new Set();
         for (const pin of preparedPins) {
@@ -738,6 +741,9 @@ async function generateReport(body, user = null) {
             if (photo?.plan_id != null && photo?.plan_x != null && photo?.plan_y != null) {
               planIds.add(photo.plan_id);
             }
+          }
+          if (progressPhotos && pin.plan_id && pin.x != null && pin.y != null && (pin.pins_photos || []).length) {
+            planIds.add(pin.plan_id);
           }
         }
 
