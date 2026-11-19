@@ -87,6 +87,28 @@ const ICONS = {
   map:      path.join(projectRoot, "icons/map-stone.png"),
 };
 
+const fmtDay = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "-");
+
+// Avancement d'une tâche (0-100), en barre courte et pourcentage.
+const ProgressCell = ({ value, fontFamily, color = "#44403c", width = 40 }) => {
+  const v = Math.max(0, Math.min(100, Number(value) || 0));
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+      <View style={{ width, height: 4, borderRadius: 2, backgroundColor: "#e7e5e4" }}>
+        <View style={{ width: (width * v) / 100, height: 4, borderRadius: 2, backgroundColor: v >= 100 ? "#15803d" : color }} />
+      </View>
+      <Text style={{ fontSize: 7, color: "#292524", fontFamily }}>{v} %</Text>
+    </View>
+  );
+};
+
+// En retard : échéance passée, pas au dernier statut, pas terminée.
+const lateChecker = (statuses = []) => {
+  const finalId = [...statuses].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).at(-1)?.id;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return (pin) => Boolean(pin.due_date && new Date(pin.due_date) < today && pin.status_id !== finalId && (pin.avancement ?? 0) < 100);
+};
+
 const tw = createTw({
   theme: {
     fontFamily: { sans: ["Helvetica", "Arial", "sans-serif"] },
@@ -277,7 +299,7 @@ function PdfCategoryLabel({ category, status }) {
   );
 }
 
-const TableCell = ({ children, header, width, align = "left", border = true, config, fontFamily }) => (
+const TableCell = ({ children, header, width, align = "left", border = true, config, fontFamily, small = false }) => (
   <View style={{
     width: width || "auto",
     padding: config?.tableView?.compactMode ? 4 : 6,
@@ -290,60 +312,89 @@ const TableCell = ({ children, header, width, align = "left", border = true, con
     alignItems: align === "center" ? "center" : "flex-start",
   }}>
     {typeof children === "string" ? (
-      <Text style={{ fontSize: header ? 10 : 9, fontWeight: header ? "bold" : "normal", color: header ? "#292524" : "#44403c", fontFamily }}>{children}</Text>
+      <Text style={{ fontSize: header ? (small ? 8 : 10) : 9, fontWeight: header ? "bold" : "normal", color: header ? "#292524" : "#44403c", fontFamily }}>{children}</Text>
     ) : children}
   </View>
 );
 
-const TableView = ({ selectedPins, categories, statuses, fields, config, fontFamily }) => {
+const TableView = ({ selectedPins, categories, statuses, fields: rawFields, config, fontFamily, startIndex = 0, lead = null }) => {
+  // Groupé par lot : le lot est déjà en tête de groupe.
+  const fields = config?.tasks?.groupBy === "category" ? { ...rawFields, category: false } : rawFields;
   const photoSizeMap = { small: { width: 80, height: 80 }, medium: { width: 120, height: 120 }, large: { width: 160, height: 160 } };
   const photoSize    = photoSizeMap[config?.tableView?.photoSize || 'medium'];
-  return (
-    <View style={{ marginTop: 8 }}>
-      <View style={{ flexDirection: "row", borderTopWidth: 1, borderLeftWidth: 1, borderTopColor: "#d6d3d1", borderLeftColor: "#d6d3d1" }}>
-        {config?.tableView?.showIndex && <TableCell config={config} fontFamily={fontFamily} header width="5%">#</TableCell>}
-        <TableCell config={config} fontFamily={fontFamily} header width="30%">Tâche</TableCell>
-        <TableCell config={config} fontFamily={fontFamily} header width="8%">ID</TableCell>
-        {fields.category   && <TableCell config={config} fontFamily={fontFamily} header width="10%">Lot</TableCell>}
-        {fields.status     && <TableCell config={config} fontFamily={fontFamily} header width="12%">Statut</TableCell>}
-        {fields.assignedTo && <TableCell config={config} fontFamily={fontFamily} header width="12%">Assigné à</TableCell>}
-        {fields.dueDate    && <TableCell config={config} fontFamily={fontFamily} header width="12%">Échéance</TableCell>}
-        {fields.snapshot   && <TableCell config={config} fontFamily={fontFamily} header width="11%" border={false}>Plan</TableCell>}
-      </View>
-      {selectedPins.map((pin, index) => {
-        const category   = categories.find((c) => String(c.id) === String(pin.category_id));
-        const status     = statuses.find((s) => s.id === pin.status_id);
-        const firstPhoto = pin.pins_photos?.[0];
-        const rowBg      = config?.tableView?.alternateRowColors && index % 2 !== 0 ? "#fafaf9" : "white";
-        return (
-          <View key={pin.id || index} style={{ flexDirection: "row", borderLeftWidth: 1, borderLeftColor: "#d6d3d1", backgroundColor: rowBg }} wrap={false}>
-            {config?.tableView?.showIndex && <TableCell config={config} fontFamily={fontFamily} width="5%" align="center">{index + 1}</TableCell>}
-            <View style={{ width: "30%", padding: config?.tableView?.compactMode ? 4 : 6, borderRightWidth: 1, borderRightColor: "#d6d3d1", borderBottomWidth: 1, borderBottomColor: "#d6d3d1", backgroundColor: rowBg }}>
-              <Text style={{ fontSize: 8, fontWeight: "bold", marginBottom: 6, fontFamily }}>{pin?.name || "Sans nom"}</Text>
-              {config?.tableView?.showPhotosInline && fields.photos && firstPhoto && (
-                <Image src={firstPhoto.public_url} style={{ width: photoSize.width, height: photoSize.height, objectFit: "cover", borderRadius: 4, border: "1pt solid #d6d3d1" }} />
-              )}
+  // Largeurs des colonnes : la colonne du nom prend ce qui reste.
+  const planning = Boolean(fields.planning);
+  const pct = (n) => `${n}%`;
+  const cols = {
+    index: config?.tableView?.showIndex ? 5 : 0, id: 8,
+    category: fields.category ? 10 : 0, status: fields.status ? (planning ? 11 : 12) : 0,
+    assignedTo: fields.assignedTo ? (planning ? 11 : 12) : 0,
+    start: planning ? 9 : 0, dueDate: fields.dueDate ? (planning ? 9 : 12) : 0,
+    progress: planning ? 12 : 0, snapshot: fields.snapshot ? (planning ? 9 : 11) : 0,
+  };
+  const used = Object.values(cols).reduce((a, b) => a + b, 0);
+  const W = Object.fromEntries(Object.entries(cols).map(([k, v]) => [k, pct(v)]));
+  const isLate = lateChecker(statuses);
+  W.name = pct(Math.max(20, 100 - used));
+  const nameHeader = { reserve: "Réserve", observation: "Observation" }[config?.reportKind === "reserves" ? "reserve" : config?.reportKind === "visite" ? "observation" : ""] || "Tâche";
+  const compact = Boolean(lead) && selectedPins.length <= 8;
+  const renderRow = (pin, index, nested = false) => {
+    const category   = categories.find((c) => String(c.id) === String(pin.category_id));
+    const status     = statuses.find((s) => s.id === pin.status_id);
+    const firstPhoto = pin.pins_photos?.[0];
+    const rowBg      = config?.tableView?.alternateRowColors && index % 2 !== 0 ? "#fafaf9" : "white";
+    return (
+      <View key={pin.id || index} style={{ flexDirection: "row", flexShrink: 0, borderLeftWidth: 1, borderLeftColor: "#d6d3d1", backgroundColor: rowBg }} wrap={nested ? undefined : false}>
+        {config?.tableView?.showIndex && <TableCell config={config} fontFamily={fontFamily} width="5%" align="center">{String(startIndex + index + 1)}</TableCell>}
+        <View style={{ width: W.name, padding: config?.tableView?.compactMode ? 4 : 6, borderRightWidth: 1, borderRightColor: "#d6d3d1", borderBottomWidth: 1, borderBottomColor: "#d6d3d1", backgroundColor: rowBg }}>
+          <Text style={{ fontSize: 8, fontWeight: "bold", marginBottom: 6, fontFamily }}>{pin?.name || "Sans nom"}</Text>
+          {config?.tableView?.showPhotosInline && fields.photos && firstPhoto && (
+            <Image src={firstPhoto.public_url} style={{ width: photoSize.width, height: photoSize.height, objectFit: "cover", borderRadius: 4, border: "1pt solid #d6d3d1" }} />
+          )}
+        </View>
+        <TableCell config={config} fontFamily={fontFamily} width={W.id}><Text style={{ fontSize: 7, fontFamily }}>{pin.projects?.project_number}-{pin.pin_number}</Text></TableCell>
+        {fields.category   && <TableCell config={config} fontFamily={fontFamily} width={W.category}><Text style={{ fontSize: 7, fontFamily }}>{category?.name || "-"}</Text></TableCell>}
+        {fields.status     && (
+          <TableCell config={config} fontFamily={fontFamily} width={W.status}>
+            <View style={{ backgroundColor: status?.color || "#666", borderRadius: 9999, paddingVertical: 2, paddingHorizontal: 6, alignSelf: "flex-start" }}>
+              <Text style={{ fontSize: 7, color: "white", fontFamily }}>{status?.name || "Inconnu"}</Text>
             </View>
-            <TableCell config={config} fontFamily={fontFamily} width="8%"><Text style={{ fontSize: 7, fontFamily }}>{pin.projects?.project_number}-{pin.pin_number}</Text></TableCell>
-            {fields.category   && <TableCell config={config} fontFamily={fontFamily} width="10%"><Text style={{ fontSize: 7, fontFamily }}>{category?.name || "-"}</Text></TableCell>}
-            {fields.status     && (
-              <TableCell config={config} fontFamily={fontFamily} width="12%">
-                <View style={{ backgroundColor: status?.color || "#666", borderRadius: 9999, paddingVertical: 2, paddingHorizontal: 6, alignSelf: "flex-start" }}>
-                  <Text style={{ fontSize: 7, color: "white", fontFamily }}>{status?.name || "Inconnu"}</Text>
-                </View>
-              </TableCell>
-            )}
-            {fields.assignedTo && <TableCell config={config} fontFamily={fontFamily} width="12%"><Text style={{ fontSize: 7, fontFamily }}>{pin.assigned_to?.name || "-"}</Text></TableCell>}
-            {fields.dueDate    && <TableCell config={config} fontFamily={fontFamily} width="12%"><Text style={{ fontSize: 7, fontFamily }}>{pin.due_date ? new Date(pin.due_date).toLocaleDateString("fr-FR") : "-"}</Text></TableCell>}
-            {fields.snapshot   && <TableCell config={config} fontFamily={fontFamily} width="11%" border={false}><Text style={{ fontSize: 7, fontFamily }}>{pin.pdf_name || "-"}</Text></TableCell>}
-          </View>
-        );
-      })}
-    </View>
+          </TableCell>
+        )}
+        {fields.assignedTo && <TableCell config={config} fontFamily={fontFamily} width={W.assignedTo}><Text style={{ fontSize: 7, fontFamily }}>{pin.assigned_to?.name || "-"}</Text></TableCell>}
+        {planning          && <TableCell config={config} fontFamily={fontFamily} width={W.start}><Text style={{ fontSize: 7, fontFamily }}>{fmtDay(pin.date_debut)}</Text></TableCell>}
+        {fields.dueDate    && <TableCell config={config} fontFamily={fontFamily} width={W.dueDate}><Text style={{ fontSize: 7, fontFamily, color: isLate(pin) ? "#b91c1c" : undefined }}>{fmtDay(pin.due_date)}</Text></TableCell>}
+        {planning          && <TableCell config={config} fontFamily={fontFamily} width={W.progress}><ProgressCell value={pin.avancement} fontFamily={fontFamily} width={28} color={config?.primaryColor} /></TableCell>}
+        {fields.snapshot   && <TableCell config={config} fontFamily={fontFamily} width={W.snapshot} border={false}><Text style={{ fontSize: 7, fontFamily }}>{pin.pdf_name || "-"}</Text></TableCell>}
+      </View>
+    );
+  };
+  return (
+    <>
+      {/* Un petit groupe tient en un bloc, en-tête compris ; un grand groupe se coupe entre ses lignes. */}
+      <View wrap={!compact} style={{ marginTop: 8 }}>
+        {lead}
+        <View style={{ flexDirection: "row", flexShrink: 0, borderTopWidth: 1, borderLeftWidth: 1, borderTopColor: "#d6d3d1", borderLeftColor: "#d6d3d1" }}>
+          {config?.tableView?.showIndex && <TableCell config={config} fontFamily={fontFamily} header small={planning} width="5%">#</TableCell>}
+          <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.name}>{nameHeader}</TableCell>
+          <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.id}>ID</TableCell>
+          {fields.category   && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.category}>Lot</TableCell>}
+          {fields.status     && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.status}>Statut</TableCell>}
+          {fields.assignedTo && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.assignedTo}>Assigné à</TableCell>}
+          {fields.planning   && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.start}>Début</TableCell>}
+          {fields.dueDate    && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.dueDate}>Échéance</TableCell>}
+          {fields.planning   && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.progress}>Avancement</TableCell>}
+          {fields.snapshot   && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.snapshot} border={false}>Plan</TableCell>}
+        </View>
+        {selectedPins.map((pin, i) => renderRow(pin, i, compact))}
+      </View>
+    </>
   );
 };
 
-const ListView = ({ selectedPins, categories, statuses, fields, config, fontFamily }) => {
+const ListView = ({ selectedPins, categories, statuses, fields: rawFields, config, fontFamily, startIndex = 0 }) => {
+  // Groupé par lot : le lot est déjà en tête de groupe.
+  const fields = config?.tasks?.groupBy === "category" ? { ...rawFields, category: false } : rawFields;
   const snapshotSizeMap = { small: { width: 100, height: 100 }, medium: { width: 120, height: 120 }, large: { width: 140, height: 140 }, xlarge: { width: 210, height: 210 } };
   const snapshotSize    = snapshotSizeMap[config?.listView?.snapshotSize || 'large'];
   const primaryColor    = config?.primaryColor || "#44403c";
@@ -358,7 +409,7 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
             <View style={{ flexDirection: "row", gap: 16, marginVertical: 12 }}>
               <View style={{ width: "65%" }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-                  {config?.listView?.showIndex && <Text style={{ fontSize: 12, fontWeight: "bold", color: primaryColor, fontFamily }}>{index + 1}.</Text>}
+                  {config?.listView?.showIndex && <Text style={{ fontSize: 12, fontWeight: "bold", color: primaryColor, fontFamily }}>{startIndex + index + 1}.</Text>}
                   <Text style={{ fontSize: 12, fontWeight: "bold", color: "#292524", fontFamily }}>{pin?.name || "Tâche sans nom"}</Text>
                 </View>
                 {(config?.listView?.showCategoryIcon || config?.listView?.showStatusPill) && (
@@ -376,7 +427,7 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
                     <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>ID:</Text>
                     <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{pin.projects?.project_number}-{pin.pin_number}</Text>
                   </View>
-                  {pin.type && (
+                  {pin.type && (!config?.reportKind || config.reportKind === "libre") && (
                     <View style={{ flexDirection: "row", marginVertical: 2 }}>
                       <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Nature:</Text>
                       <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{PIN_TYPE_LABELS[pin.type] ?? pin.type}</Text>
@@ -409,6 +460,18 @@ const ListView = ({ selectedPins, categories, statuses, fields, config, fontFami
                       <Image src={ICONS.calendar} style={{ width: 10, height: 10, marginRight: 3 }} />
                       <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{pin.due_date ? new Date(pin.due_date).toLocaleDateString("fr-FR") : "-"}</Text>
                     </View>
+                  )}
+                  {fields.planning && (
+                    <>
+                      <View style={{ flexDirection: "row", marginVertical: 2 }}>
+                        <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Début:</Text>
+                        <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{fmtDay(pin.date_debut)}</Text>
+                      </View>
+                      <View style={{ flexDirection: "row", alignItems: "center", marginVertical: 2 }}>
+                        <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Avancement:</Text>
+                        <ProgressCell value={pin.avancement} fontFamily={fontFamily} width={60} color={primaryColor} />
+                      </View>
+                    </>
                   )}
                   {fields.description && (
                     <View style={{ flexDirection: "row", marginVertical: 2 }}>
@@ -649,6 +712,61 @@ const LocalizedPhotosView = ({ selectedPins, config, fontFamily, planImagesByPla
     </View>
   )
 }
+
+// ── Rapport de visite ──────────────────────────────────────────────────────
+// Une fiche par observation : ce qui a été vu (titre, description, date),
+// où (plan et extrait localisé), puis ses photos avec leur légende.
+const VisiteView = ({ selectedPins, config, fontFamily, startIndex = 0 }) => {
+  const primaryColor = config?.primaryColor || "#44403c";
+  const CONTENT_WIDTH = 531;
+  const GAP = 8;
+  const perRow = config?.tasks?.photosPerRow ?? 3;
+  const photoW = (CONTENT_WIDTH - GAP * (perRow - 1)) / perRow;
+  if (!selectedPins.length) return <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>Aucune observation.</Text>;
+  return (
+    <View style={{ marginTop: 8 }}>
+      {selectedPins.map((pin, index) => {
+        const photos = pin.pins_photos || [];
+        return (
+          <View key={pin.id || index} style={{ marginBottom: 14 }}>
+            <View wrap={false} style={{ flexDirection: "row", gap: 14 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 12, fontWeight: "bold", color: "#292524", fontFamily }}>
+                  <Text style={{ color: primaryColor }}>{startIndex + index + 1}. </Text>{pin.name || "Observation"}
+                </Text>
+                <Text style={{ fontSize: 8, color: "#78716c", marginTop: 3, fontFamily }}>
+                  {pin.projects?.project_number}-{pin.pin_number} · constatée le {fmtDay(pin.created_at)}
+                  {pin.created_by?.name ? ` par ${pin.created_by.name}` : ""}
+                </Text>
+                {pin.note ? <Text style={{ fontSize: 9.5, color: "#292524", marginTop: 8, lineHeight: 1.45, fontFamily }}>{pin.note}</Text> : null}
+                {pin.pdf_name ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 8 }}>
+                    <Image src={ICONS.map} style={{ width: 10, height: 10 }} />
+                    <Text style={{ fontSize: 8.5, color: "#44403c", fontFamily }}>{pin.pdf_name}</Text>
+                  </View>
+                ) : null}
+              </View>
+              {pin.snapshot ? (
+                <Image src={pin.snapshot} style={{ width: 130, height: 130, objectFit: "cover", borderRadius: 4, border: `2pt solid ${primaryColor}` }} />
+              ) : null}
+            </View>
+            {photos.length > 0 && (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: GAP, marginTop: 10 }}>
+                {photos.map((photo, i) => (
+                  <View key={photo.id || i} wrap={false} style={{ width: photoW }}>
+                    <Image src={photo.public_url} style={{ width: photoW, height: photoW * 0.75, objectFit: "cover", borderRadius: 4 }} />
+                    {photo.description ? <Text style={{ fontSize: 8, color: "#44403c", marginTop: 3, fontFamily }}>{photo.description}</Text> : null}
+                  </View>
+                ))}
+              </View>
+            )}
+            {index < selectedPins.length - 1 && <View style={{ height: 1, backgroundColor: "#e7e5e4", marginTop: 14 }} />}
+          </View>
+        );
+      })}
+    </View>
+  );
+};
 
 const ParticipantsSectionContent = ({ participants = [], config, primaryColor, fontFamily, sectionTitles }) => {
   const pc                            = config?.participants || {};
@@ -934,6 +1052,56 @@ export default function PdfReportServer({
 
   const OWN_PAGE_SECTIONS = new Set(['participants', 'signatures', 'planOverviews', 'planning'])
 
+  // Groupes de la section éléments (tasks.groupBy) : lot, statut, plan ou aucun.
+  const taskGroups = (() => {
+    const by = templateConfig.tasks?.groupBy || "none";
+    if (by === "none" || actualDisplayMode === "photoGallery" || actualDisplayMode === "localizedPhotos") {
+      return [{ key: "all", label: null, pins: selectedPins }];
+    }
+    const keyOf = { category: (p) => p.category_id, status: (p) => p.status_id, plan: (p) => p.pdf_name }[by] || (() => null);
+    const map = new Map();
+    for (const p of selectedPins) {
+      const k = keyOf(p) ?? "__none";
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(p);
+    }
+    const describe = (k) => {
+      if (k === "__none") return { label: by === "category" ? "Sans lot" : by === "status" ? "Sans statut" : "Sans plan" };
+      if (by === "category") {
+        const c = categories.find((x) => String(x.id) === String(k));
+        return { label: c?.name || "Lot", sub: c?.entreprises?.name || null, order: c?.order ?? 0 };
+      }
+      if (by === "status") {
+        const st = statuses.find((x) => String(x.id) === String(k));
+        return { label: st?.name || "Statut", order: st?.order ?? 0 };
+      }
+      return { label: k };
+    };
+    return [...map.entries()]
+      .map(([k, pins]) => ({ key: String(k), pins, ...describe(k) }))
+      .sort((a, b) => (a.key === "__none") - (b.key === "__none") || (a.order ?? 0) - (b.order ?? 0) || String(a.label).localeCompare(String(b.label), "fr"))
+      .reduce((acc, g) => [...acc, { ...g, startIndex: acc.reduce((n, x) => n + x.pins.length, 0) }], []);
+  })();
+
+  const renderPins = (pins, startIndex = 0, lead = null) =>
+    actualDisplayMode === "visite" ? (
+      <VisiteView selectedPins={pins} startIndex={startIndex} config={templateConfig} fontFamily={fontFamily} />
+    ) : actualDisplayMode === "photoGallery" ? (
+      <PhotoGalleryView selectedPins={pins} startIndex={startIndex} statuses={statuses} config={templateConfig} fontFamily={fontFamily} primaryColor={primaryColor} />
+    ) : actualDisplayMode === "localizedPhotos" ? (
+      <LocalizedPhotosView
+        selectedPins={pins} startIndex={startIndex}
+        config={templateConfig}
+        fontFamily={fontFamily}
+        planImagesByPlanId={planImagesByPlanId}
+        planDimensionsByPlanId={planDimensionsByPlanId}
+      />
+    ) : actualDisplayMode === "table" ? (
+      <TableView selectedPins={pins} startIndex={startIndex} lead={lead} categories={categories} statuses={statuses} fields={fields} config={templateConfig} fontFamily={fontFamily} />
+    ) : (
+      <ListView selectedPins={pins} startIndex={startIndex} categories={categories} statuses={statuses} fields={fields} config={templateConfig} fontFamily={fontFamily} />
+  );
+
   const renderInlineSection = (sectionId) => {
     switch (sectionId) {
 
@@ -956,7 +1124,7 @@ export default function PdfReportServer({
               )}
               <View style={{ flexDirection: "row", width: "50%" }}>
                 {templateConfig.summary?.showTotalCount   && <View style={{ width: "33%" }}><Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }}>Total</Text><Text style={{ fontSize: 11, fontWeight: "bold", marginTop: 4, fontFamily }}>{selectedPins.length}</Text></View>}
-                {templateConfig.summary?.showOverdueCount && <View style={{ width: "33%", paddingHorizontal: 4 }}><Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }}>En retard</Text><Text style={{ fontSize: 11, fontWeight: "bold", marginTop: 4, fontFamily }}>{selectedPins.filter((p) => p.due_date && new Date(p.due_date) < new Date()).length}</Text></View>}
+                {templateConfig.summary?.showOverdueCount && <View style={{ width: "33%", paddingHorizontal: 4 }}><Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }}>En retard</Text><Text style={{ fontSize: 11, fontWeight: "bold", marginTop: 4, fontFamily }}>{selectedPins.filter(lateChecker(statuses)).length}</Text></View>}
                 {templateConfig.summary?.showPlanCount    && <View style={{ width: "33%", paddingHorizontal: 4 }}><Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }}>Plans</Text><Text style={{ fontSize: 11, fontWeight: "bold", marginTop: 4, fontFamily }}>{Object.keys(groupBy(selectedPins, "pdf_name")).length}</Text></View>}
               </View>
             </View>
@@ -987,21 +1155,32 @@ export default function PdfReportServer({
                 <Text style={textStyle}>{tasksTitle}</Text>
               </View>
             )}
-            {actualDisplayMode === "photoGallery" ? (
-              <PhotoGalleryView selectedPins={selectedPins} statuses={statuses} config={templateConfig} fontFamily={fontFamily} primaryColor={primaryColor} />
-            ) : actualDisplayMode === "localizedPhotos" ? (
-              <LocalizedPhotosView
-                selectedPins={selectedPins}
-                config={templateConfig}
-                fontFamily={fontFamily}
-                planImagesByPlanId={planImagesByPlanId}
-                planDimensionsByPlanId={planDimensionsByPlanId}
-              />
-            ) : actualDisplayMode === "table" ? (
-              <TableView selectedPins={selectedPins} categories={categories} statuses={statuses} fields={fields} config={templateConfig} fontFamily={fontFamily} />
-            ) : (
-              <ListView selectedPins={selectedPins} categories={categories} statuses={statuses} fields={fields} config={templateConfig} fontFamily={fontFamily} />
-            )}
+            {taskGroups.map((group) => {
+              const start = group.startIndex ?? 0;
+              const header = group.label ? (
+                <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6, marginTop: 12, paddingBottom: 4, borderBottomWidth: 1, borderBottomColor: "#d6d3d1" }}>
+                  <Text style={{ fontSize: 10.5, fontWeight: "bold", color: "#292524", fontFamily }}>{group.label}</Text>
+                  {group.sub ? <Text style={{ fontSize: 8.5, color: "#78716c", fontFamily }}>{group.sub}</Text> : null}
+                  <Text style={{ fontSize: 8.5, color: "#78716c", fontFamily }}>· {group.pins.length}</Text>
+                </View>
+              ) : null;
+              // En liste, l'en-tête du groupe reste sur la page de son premier élément.
+              const splitFirst = header && (actualDisplayMode === "list" || actualDisplayMode === "visite");
+              return (
+                <View key={group.key}>
+                  {splitFirst ? (
+                    <>
+                      <View wrap={false}>{header}{renderPins(group.pins.slice(0, 1), start)}</View>
+                      {group.pins.length > 1 && renderPins(group.pins.slice(1), start + 1)}
+                    </>
+                  ) : actualDisplayMode === "table" ? (
+                    renderPins(group.pins, start, header)
+                  ) : (
+                    <>{header}{renderPins(group.pins, start)}</>
+                  )}
+                </View>
+              );
+            })}
           </View>
         );
       }
@@ -1060,7 +1239,7 @@ export default function PdfReportServer({
                   Vue d'ensemble — {planName}
                 </Text>
                 <Text style={{ fontSize: 9, color: "#78716c", marginTop: 2, fontFamily }}>
-                  {pinsOnPlan.length} tâche{pinsOnPlan.length > 1 ? 's' : ''} sur ce plan
+                  {pinsOnPlan.length} {({ reserves: 'réserve', visite: 'observation', avancement: 'tâche' }[templateConfig.reportKind] || 'élément')}{pinsOnPlan.length > 1 ? 's' : ''} sur ce plan
                 </Text>
               </View>
 
@@ -1220,8 +1399,12 @@ if (sectionId === 'planning') {
 
   for (const id of sectionOrder) {
     if (OWN_PAGE_SECTIONS.has(id)) {
+      // Une section vide (pas de planning, pas de participants…) ne coupe pas
+      // la page : le résumé et les éléments restent ensemble.
+      const page = renderOwnPageSection(id)
+      if (!page) continue
       if (currentInlineRun) { runs.push(currentInlineRun); currentInlineRun = null }
-      runs.push({ type: 'page', id })
+      runs.push({ type: 'page', id, page })
     } else {
       if (!currentInlineRun) currentInlineRun = { type: 'inline', ids: [] }
       currentInlineRun.ids.push(id)
@@ -1234,9 +1417,7 @@ if (sectionId === 'planning') {
       <CoverPage selectedProject={selectedProject} config={templateConfig} participants={participants} fontFamily={fontFamily} sectionTitles={sectionTitles} />
 
       {runs.map((run, runIndex) => {
-        if (run.type === 'page') {
-          return renderOwnPageSection(run.id)
-        }
+        if (run.type === 'page') return run.page
         const renderedSections = run.ids.map(id => renderInlineSection(id)).filter(Boolean)
         if (!renderedSections.length) return null
         return (
