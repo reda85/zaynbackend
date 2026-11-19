@@ -9,7 +9,7 @@ import { dirname } from 'path';
 import RichTextPdfRenderer from './RichTextPdfrenderer.jsx';
 import {
   buildProgress, ProgressSummary, LotsTable, MilestonesList, AttentionList,
-  Gantt, ganttRows, ganttRange, paginateGantt, SectionTitle, photoReport, PhotoProgressPage, WorkforceTable,
+  Gantt, ganttRows, ganttRange, paginateGantt, SectionTitle, photoReport, PhotoProgressPage, WorkforceTable, sectionOpts,
 } from './ProgressSections.jsx';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -159,15 +159,18 @@ const getSectionTitleStyle = (sectionTitles, primaryColor, fontFamily) => {
   const fontSize  = sizeMap[st.titleSize ?? 'medium']
   const showBar   = st.titleAccentBar ?? true
   const underline = st.titleUnderline ?? false
+  // Couleur du titre : celle du modèle, gris foncé ou une couleur choisie.
+  const color = st.titleColor === 'dark' ? '#292524' : st.titleColor === 'custom' && st.titleCustomColor ? st.titleCustomColor : primaryColor
   return {
     containerStyle: showBar
-      ? { borderLeftWidth: 3, borderLeftColor: primaryColor, paddingLeft: 8, marginBottom: 12 }
+      ? { borderLeftWidth: 3, borderLeftColor: color, paddingLeft: 8, marginBottom: 12 }
       : { marginBottom: 12 },
     textStyle: {
       fontSize,
       fontWeight:     "bold",
-      color:          primaryColor,
+      color,
       textDecoration: underline ? "underline" : "none",
+      ...(st.titleUppercase ? { textTransform: "uppercase", letterSpacing: 0.5 } : {}),
       fontFamily,
     },
   }
@@ -961,7 +964,7 @@ const ScopeBanner = ({ scopeLots, primaryColor, fontFamily }) => {
   );
 };
 
-const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionTitles, scopeLots = [] }) => {
+const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionTitles, scopeLots = [], coverStats = null }) => {
   if (!config?.coverPage?.enabled) return null;
   const primaryColor    = config?.primaryColor || "#44403c";
   const logoSizeMap     = { small: { width: 80, height: 56 }, medium: { width: 112, height: 80 }, large: { width: 144, height: 96 } };
@@ -999,7 +1002,7 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
 
         {/* Title */}
         <CoverTitle config={config} primaryColor={primaryColor} projectName={selectedProject?.name} fontFamily={fontFamily} />
-        <CoverScope scopeLots={scopeLots} primaryColor={(config?.coverPage?.titleColor || 'primary') === 'custom' ? (config.coverPage.titleCustomColor || primaryColor) : primaryColor} align={config?.coverPage?.titleAlign} fontFamily={fontFamily} />
+        <CoverScope scopeLots={config?.coverPage?.showScope === false ? [] : scopeLots} primaryColor={(config?.coverPage?.titleColor || 'primary') === 'custom' ? (config.coverPage.titleCustomColor || primaryColor) : primaryColor} align={config?.coverPage?.titleAlign} fontFamily={fontFamily} />
 
         {/* Project photo */}
         {config.coverPage?.showProjectPhoto && projectPhotoUrl && (
@@ -1023,11 +1026,27 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
           </View>
         )}
 
-        {/* Executive summary */}
-        {config.coverPage?.showSummary && (
+        {/* Avancement global (rapport d'avancement) */}
+        {config.coverPage?.showProgress !== false && coverStats?.global != null && (
+          <View style={{ marginBottom: 24 }}>
+            <Text style={{ fontSize: 9, fontWeight: "bold", color: primaryColor, letterSpacing: 1.2, textTransform: "uppercase", fontFamily }}>Avancement global</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginTop: 6 }}>
+              <Text style={{ fontSize: 28, fontWeight: "bold", color: "#292524", fontFamily }}>{`${coverStats.global} %`}</Text>
+              <View style={{ width: 220, height: 10, backgroundColor: "#e7e5e4", borderRadius: 5 }}>
+                <View style={{ width: 220 * Math.min(100, Math.max(0, coverStats.global)) / 100, height: 10, backgroundColor: primaryColor, borderRadius: 5 }} />
+              </View>
+            </View>
+            {coverStats.asOf ? <Text style={{ fontSize: 9, color: "#78716c", marginTop: 4, fontFamily }}>{coverStats.asOf}</Text> : null}
+          </View>
+        )}
+
+        {/* Résumé : chiffres du rapport */}
+        {config.coverPage?.showSummary && coverStats?.lines?.length > 0 && (
           <View style={{ backgroundColor: "#f5f5f4", padding: 20, borderRadius: 8, borderLeftWidth: 4, borderLeftColor: primaryColor, marginBottom: 24 }}>
-            <Text style={{ fontSize: 9, fontWeight: "bold", color: primaryColor, marginBottom: 6, fontFamily }}>RÉSUMÉ EXÉCUTIF</Text>
-            <Text style={{ fontSize: 11, color: "#44403c", fontFamily }}>"Le projet progresse conformément au planning."</Text>
+            <Text style={{ fontSize: 9, fontWeight: "bold", color: primaryColor, marginBottom: 6, fontFamily }}>RÉSUMÉ</Text>
+            {coverStats.lines.map((line, i) => (
+              <Text key={i} style={{ fontSize: 11, color: "#44403c", marginTop: i ? 3 : 0, fontFamily }}>{line}</Text>
+            ))}
           </View>
         )}
 
@@ -1118,6 +1137,34 @@ export default function PdfReportServer({
     return order.includes("progressConclusion") ? order : [...order, "progressConclusion"];
   })();
   const pinsByStatus      = groupBy(selectedPins, "status_id");
+  const showSubs          = templateConfig.sectionTitles?.showSubtitles !== false;
+  const opts              = (key) => sectionOpts(templateConfig, key);
+  // Chiffres de la page de garde, tirés du rapport lui-même.
+  const coverStats = (() => {
+    const plural = (n, word) => `${n} ${word}${n > 1 ? "s" : ""}`;
+    if (isProgress) {
+      const { counts, tasks, nextMilestone, global } = progressModel;
+      return {
+        global,
+        asOf: `Situation au ${new Date().toLocaleDateString("fr-FR")}${templateConfig.period ? ` · ${periodLabel(templateConfig.period)}` : ""}`,
+        lines: [
+          `${plural(progressModel.lots.length, "lot")}, dont ${counts.late} en retard`,
+          `${tasks.done}/${tasks.total} tâches terminées, ${plural(tasks.late.length, "tâche")} en retard`,
+          nextMilestone ? `Prochain jalon : ${nextMilestone.libelle}, le ${new Date(nextMilestone.date).toLocaleDateString("fr-FR")}` : null,
+        ].filter(Boolean),
+      };
+    }
+    const word = { reserves: "réserve", visite: "observation" }[templateConfig.reportKind] || "élément";
+    const late = selectedPins.filter(lateChecker(statuses)).length;
+    return {
+      global: null,
+      lines: [
+        plural(selectedPins.length, word),
+        templateConfig.reportKind === "visite" ? null : `${late} en retard`,
+        templateConfig.period ? periodLabel(templateConfig.period) : null,
+      ].filter(Boolean),
+    };
+  })();
   const actualDisplayMode = templateConfig.tasks?.displayMode || displayMode;
   const tasksTitle        = templateConfig.tasks?.title;
   const showFooter        = templateConfig.footer?.enabled;
@@ -1199,7 +1246,7 @@ export default function PdfReportServer({
       case 'summary':
         if (!templateConfig.summary?.enabled) return null;
         if (isProgress) {
-          return <ProgressSummary key="summary" model={progressModel} period={templateConfig.period ? periodLabel(templateConfig.period) : null} title={templateConfig.reportTitle} primaryColor={primaryColor} fontFamily={fontFamily} backgroundColor={templateConfig.summary.backgroundColor} />;
+          return <ProgressSummary key="summary" model={progressModel} period={templateConfig.period ? periodLabel(templateConfig.period) : null} title={templateConfig.reportTitle} primaryColor={primaryColor} fontFamily={fontFamily} backgroundColor={templateConfig.summary.backgroundColor} show={opts('summary')} />;
         }
         return (
           <View key="summary" style={{ padding: 16, borderRadius: 8, marginBottom: 8, backgroundColor: templateConfig.summary.backgroundColor || "#f5f5f4" }}>
@@ -1284,8 +1331,8 @@ export default function PdfReportServer({
         if (!isProgress || !progressOpts.lots) return null;
         return (
           <View key="progressLots">
-            <SectionTitle title="Lots" sub="Dates prévues et réelles, avancement déclaré par lot" titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)} fontFamily={fontFamily} />
-            <LotsTable model={progressModel} primaryColor={primaryColor} fontFamily={fontFamily} />
+            <SectionTitle title={opts('lots').title} sub={showSubs ? "Dates prévues et réelles, avancement déclaré par lot" : null} titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)} fontFamily={fontFamily} />
+            <LotsTable model={progressModel} primaryColor={primaryColor} fontFamily={fontFamily} opts={opts('lots')} />
           </View>
         );
 
@@ -1293,8 +1340,8 @@ export default function PdfReportServer({
         if (!isProgress || !progressOpts.attention) return null;
         return (
           <View key="progressAttention">
-            <SectionTitle title="Points d'attention" titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)} fontFamily={fontFamily} />
-            <AttentionList model={progressModel} categories={categories} fontFamily={fontFamily} />
+            <SectionTitle title={opts('attention').title} titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)} fontFamily={fontFamily} />
+            <AttentionList model={progressModel} categories={categories} fontFamily={fontFamily} showLots={opts('attention').lots !== false} showTasks={opts('attention').tasks !== false} />
           </View>
         );
 
@@ -1309,12 +1356,12 @@ export default function PdfReportServer({
           // Tableau court : il reste avec son titre.
           <View key="progressWorkforce" wrap={rows.length > 14}>
             <SectionTitle
-              title="Effectifs de site"
-              sub={when ? `Personnel présent sur le chantier le ${String(when).slice(8, 10)}/${String(when).slice(5, 7)}/${String(when).slice(0, 4)}` : "Personnel présent sur le chantier"}
+              title={opts('workforce').title}
+              sub={!showSubs ? null : when ? `Personnel présent sur le chantier le ${String(when).slice(8, 10)}/${String(when).slice(5, 7)}/${String(when).slice(0, 4)}` : "Personnel présent sur le chantier"}
               titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)}
               fontFamily={fontFamily}
             />
-            <WorkforceTable rows={rows} primaryColor={primaryColor} fontFamily={fontFamily} />
+            <WorkforceTable rows={rows} primaryColor={primaryColor} fontFamily={fontFamily} showLots={opts('workforce').lots !== false} showTotal={opts('workforce').total !== false} />
           </View>
         );
       }
@@ -1324,7 +1371,7 @@ export default function PdfReportServer({
         if (!isProgress || !progressOpts.conclusion || !hasRichTextContent(doc)) return null;
         return (
           <View key="progressConclusion" style={{ marginTop: 10 }}>
-            <SectionTitle title="Recommandations et conclusion" titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)} fontFamily={fontFamily} />
+            <SectionTitle title={opts('conclusion').title} titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)} fontFamily={fontFamily} />
             <View style={{ marginTop: 6 }}>
               <RichTextPdfRenderer content={doc} fontFamily={fontFamily} primaryColor={primaryColor} />
             </View>
@@ -1336,8 +1383,8 @@ export default function PdfReportServer({
         if (!isProgress || !progressOpts.milestones || !progressModel.jalons.length) return null;
         return (
           <View key="progressMilestones">
-            <SectionTitle title="Jalons" titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)} fontFamily={fontFamily} />
-            <MilestonesList model={progressModel} fontFamily={fontFamily} />
+            <SectionTitle title={opts('milestones').title} titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)} fontFamily={fontFamily} />
+            <MilestonesList model={progressModel} fontFamily={fontFamily} upcomingOnly={opts('milestones').upcomingOnly === true} />
           </View>
         );
 
@@ -1368,7 +1415,7 @@ export default function PdfReportServer({
           {showHeader && <PageHeader {...headerProps} />}
           {showFooter && <PageFooter templateConfig={templateConfig} selectedProject={selectedProject} fontFamily={fontFamily} />}
           <View style={{ ...containerStyle, marginBottom: 10 }}>
-            <Text style={textStyle}>Planning{pages.length > 1 ? ` (${i + 1}/${pages.length})` : ''}</Text>
+            <Text style={textStyle}>{opts('gantt').title}{pages.length > 1 ? ` (${i + 1}/${pages.length})` : ''}</Text>
           </View>
           <Gantt rows={pageRows} range={range} model={progressModel} width={PAGE_W - 64} primaryColor={primaryColor} fontFamily={fontFamily} />
         </Page>
@@ -1379,30 +1426,41 @@ export default function PdfReportServer({
       if (!isProgress || !progressOpts.photos) return null;
       const items = photoReport(progressModel);
       if (!items.length) return null;
+      const po = opts('photos');
+      const perPage = Number(po.perPage) === 2 ? 2 : 1;
       const PAGE_W = 842, PAGE_H = 595;
-      const bodyH = PAGE_H - paddingTop - paddingBottom - 70 /* titre et nom de la tâche */;
+      const NAME_H = 22;
+      const bodyH = (PAGE_H - paddingTop - paddingBottom - 40 /* titre */ - perPage * NAME_H - (perPage - 1) * 14) / perPage;
       const { containerStyle, textStyle } = getSectionTitleStyle(sectionTitles, primaryColor, fontFamily);
-      return items.map((item, i) => (
-        <Page key={`photo-${i}`} size="A4" orientation="landscape" style={pageStyle}>
+      const pages = [];
+      for (let i = 0; i < items.length; i += perPage) pages.push(items.slice(i, i + perPage));
+      return pages.map((pageItems, pi) => (
+        <Page key={`photo-${pi}`} size="A4" orientation="landscape" style={pageStyle}>
           {showHeader && <PageHeader {...headerProps} />}
           {showFooter && <PageFooter templateConfig={templateConfig} selectedProject={selectedProject} fontFamily={fontFamily} />}
           <View style={{ ...containerStyle, marginBottom: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' }}>
-            <Text style={textStyle}>Reportage photo</Text>
-            <Text style={{ fontSize: 8, color: '#78716c', fontFamily }}>{i + 1} / {items.length}</Text>
+            <Text style={textStyle}>{po.title}</Text>
+            <Text style={{ fontSize: 8, color: '#78716c', fontFamily }}>{pi + 1} / {pages.length}</Text>
           </View>
-          <Text style={{ fontSize: 11, fontWeight: 'bold', color: '#292524', marginBottom: 8, fontFamily }}>
-            {item.task.name || 'Tâche'}
-            <Text style={{ fontWeight: 'normal', color: '#78716c' }}>{item.lot ? `  ·  ${item.lot.name}` : ''}</Text>
-          </Text>
-          <PhotoProgressPage
-            item={item}
-            width={PAGE_W - 64}
-            height={bodyH}
-            planImagesByPlanId={planImagesByPlanId}
-            planDimensionsByPlanId={planDimensionsByPlanId}
-            primaryColor={primaryColor}
-            fontFamily={fontFamily}
-          />
+          {pageItems.map((item, k) => (
+            <View key={k} style={{ marginTop: k ? 14 : 0 }}>
+              <Text style={{ fontSize: 11, fontWeight: 'bold', color: '#292524', height: NAME_H, fontFamily }}>
+                {item.task.name || 'Tâche'}
+                <Text style={{ fontWeight: 'normal', color: '#78716c' }}>{item.lot ? `  ·  ${item.lot.name}` : ''}</Text>
+              </Text>
+              <PhotoProgressPage
+                item={item}
+                width={PAGE_W - 64}
+                height={bodyH}
+                planImagesByPlanId={planImagesByPlanId}
+                planDimensionsByPlanId={planDimensionsByPlanId}
+                primaryColor={primaryColor}
+                fontFamily={fontFamily}
+                showPlan={po.plan !== false}
+                showCaption={po.caption !== false}
+              />
+            </View>
+          ))}
         </Page>
       ));
     }
@@ -1628,7 +1686,7 @@ if (sectionId === 'planning') {
 
   return (
     <Document>
-      <CoverPage selectedProject={selectedProject} config={templateConfig} participants={participants} fontFamily={fontFamily} sectionTitles={sectionTitles} scopeLots={scopeLots} />
+      <CoverPage selectedProject={selectedProject} config={templateConfig} participants={participants} fontFamily={fontFamily} sectionTitles={sectionTitles} scopeLots={scopeLots} coverStats={coverStats} />
 
       {runs.map((run, runIndex) => {
         if (run.type === 'page') return run.page
