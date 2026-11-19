@@ -9,7 +9,7 @@ import { dirname } from 'path';
 import RichTextPdfRenderer from './RichTextPdfrenderer.jsx';
 import {
   buildProgress, ProgressSummary, LotsTable, MilestonesList, AttentionList,
-  Gantt, ganttRows, ganttRange, paginateGantt, SectionTitle, photoReport, PhotoProgressPage,
+  Gantt, ganttRows, ganttRange, paginateGantt, SectionTitle, photoReport, PhotoProgressPage, WorkforceTable,
 } from './ProgressSections.jsx';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1027,6 +1027,7 @@ export default function PdfReportServer({
   planNames           = {},
   planningImages      = [],
   planningObservations = null,
+  progressContent      = null,  // { workforce: [{ name, lots, count }], workforceDate, conclusion } (rapport d'avancement)
   milestones          = [],   // jalons du planning (rapport d'avancement)
   // ── Nécessaires pour le mode "Photos localisées" ──
   planImagesByPlanId    = {},  // { [plan_id]: url image brute complète du plan (plans.png_url) }
@@ -1039,12 +1040,12 @@ export default function PdfReportServer({
   // Rapport d'avancement : synthèse, lots, retards, jalons et planning se
   // placent après le résumé, avant le détail des tâches.
   const isProgress        = templateConfig.reportKind === "avancement";
-  const progressOpts      = { lots: true, attention: true, milestones: true, gantt: true, ganttTasks: true, photos: true, planOverviews: false, ...(templateConfig.progress || {}) };
+  const progressOpts      = { lots: true, attention: true, milestones: true, gantt: true, ganttTasks: true, photos: true, workforce: true, conclusion: true, planOverviews: false, ...(templateConfig.progress || {}) };
   const progressModel     = isProgress ? buildProgress({ categories, pins: selectedPins, milestones, statuses }) : null;
   const sectionOrder      = (() => {
     const base = templateConfig.sectionOrder || DEFAULT_SECTION_ORDER;
     if (!isProgress) return base;
-    const extra = ["progressLots", "progressAttention", "progressMilestones", "gantt"].filter((id) => !base.includes(id));
+    const extra = ["progressLots", "progressAttention", "progressMilestones", "progressWorkforce", "gantt"].filter((id) => !base.includes(id));
     const at = base.indexOf("summary") + 1;
     const order = [...base.slice(0, at), ...extra, ...base.slice(at)];
     // Le reportage photo suit le pointage des tâches, comme dans les rapports
@@ -1053,7 +1054,8 @@ export default function PdfReportServer({
       const after = order.indexOf("tasks");
       order.splice(after >= 0 ? after + 1 : order.length, 0, "progressPhotos");
     }
-    return order;
+    // Recommandations et conclusion ferment le rapport.
+    return [...order.filter((id) => id !== "progressConclusion"), "progressConclusion"];
   })();
   const pinsByStatus      = groupBy(selectedPins, "status_id");
   const actualDisplayMode = templateConfig.tasks?.displayMode || displayMode;
@@ -1235,6 +1237,37 @@ export default function PdfReportServer({
             <AttentionList model={progressModel} categories={categories} fontFamily={fontFamily} />
           </View>
         );
+
+      case 'progressWorkforce': {
+        const rows = progressContent?.workforce || [];
+        if (!isProgress || !progressOpts.workforce || !rows.length) return null;
+        const when = progressContent.workforceDate || templateConfig.period?.end || null;
+        return (
+          // Tableau court : il reste avec son titre.
+          <View key="progressWorkforce" wrap={rows.length > 14}>
+            <SectionTitle
+              title="Effectifs de site"
+              sub={when ? `Personnel présent sur le chantier le ${String(when).slice(8, 10)}/${String(when).slice(5, 7)}/${String(when).slice(0, 4)}` : "Personnel présent sur le chantier"}
+              titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)}
+              fontFamily={fontFamily}
+            />
+            <WorkforceTable rows={rows} primaryColor={primaryColor} fontFamily={fontFamily} />
+          </View>
+        );
+      }
+
+      case 'progressConclusion': {
+        const doc = progressContent?.conclusion;
+        if (!isProgress || !progressOpts.conclusion || !hasRichTextContent(doc)) return null;
+        return (
+          <View key="progressConclusion" style={{ marginTop: 10 }}>
+            <SectionTitle title="Recommandations et conclusion" titleStyle={getSectionTitleStyle(sectionTitles, primaryColor, fontFamily)} fontFamily={fontFamily} />
+            <View style={{ marginTop: 6 }}>
+              <RichTextPdfRenderer content={doc} fontFamily={fontFamily} primaryColor={primaryColor} />
+            </View>
+          </View>
+        );
+      }
 
       case 'progressMilestones':
         if (!isProgress || !progressOpts.milestones || !progressModel.jalons.length) return null;

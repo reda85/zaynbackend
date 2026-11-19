@@ -496,6 +496,18 @@ const REPORT_FILE_PREFIX = { reserves: "Rapport_reserves", visite: "Rapport_visi
 
 // Historique : une ligne par rapport généré (table reports). Un échec ici ne
 // doit pas faire échouer le rapport lui-même.
+// Effectifs et conclusion saisis à la composition d'un rapport d'avancement.
+function cleanProgressContent(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const str = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+  const workforce = (Array.isArray(raw.workforce) ? raw.workforce : [])
+    .slice(0, 60)
+    .map((r) => ({ name: str(r?.name, 120), lots: str(r?.lots, 240), count: Math.round(Number(r?.count)) }))
+    .filter((r) => r.name && Number.isFinite(r.count) && r.count > 0 && r.count < 100000);
+  const conclusion = raw.conclusion && typeof raw.conclusion === "object" && raw.conclusion.type === "doc" ? raw.conclusion : null;
+  return { workforce, workforceDate: isDay(raw.workforceDate) ? raw.workforceDate : null, conclusion };
+}
+
 async function recordReport({ user, project, projectId, kind, title, storagePath, fileName, fileSize, itemCount, period, templateId }) {
   try {
     let createdBy = null;
@@ -524,6 +536,7 @@ async function generateReport(body, user = null) {
         projectId, selectedIds, fields, displayMode, templateConfig,
         reportTitle, participants, planningImages, planningObservations, customSections,
         reportKind, templateKind, progress, period: rawPeriod, templateId,
+        progressContent: rawProgressContent,
       } = body;
       // Période couverte (dates « AAAA-MM-JJ »), affichée et gardée dans l'historique.
       const period = rawPeriod && (isDay(rawPeriod.start) || isDay(rawPeriod.end))
@@ -690,7 +703,7 @@ async function generateReport(body, user = null) {
       const finalConfig = { ...kindConfig, reportKind: kind, ...(reportTitle ? { reportTitle } : {}), ...(period ? { period } : {}) };
       // Contenu du rapport d'avancement choisi à la composition.
       if (progress && typeof progress === "object") {
-        const allowed = ["lots", "attention", "milestones", "gantt", "ganttTasks", "photos", "planOverviews", "details"];
+        const allowed = ["lots", "attention", "milestones", "gantt", "ganttTasks", "photos", "workforce", "conclusion", "planOverviews", "details"];
         finalConfig.progress = {
           ...(finalConfig.progress || {}),
           ...Object.fromEntries(allowed.filter((k) => typeof progress[k] === "boolean").map((k) => [k, progress[k]])),
@@ -807,6 +820,7 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
           planNames,
           planningImages:    safePlanningImages,
           planningObservations: planningObservations || null,
+          progressContent:   kind === "avancement" ? cleanProgressContent(rawProgressContent) : null,
           milestones,
           planImagesByPlanId,
           planDimensionsByPlanId,

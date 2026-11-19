@@ -524,3 +524,36 @@ export const PhotoProgressPage = ({ item, width, height, planImagesByPlanId = {}
     </View>
   );
 };
+
+// ── Effectifs de site ────────────────────────────────────────────────────────
+// Personnel présent par entreprise, saisi à la composition du rapport.
+export const WorkforceTable = ({ rows = [], primaryColor, fontFamily }) => {
+  const W = ["44%", "40%", "16%"];
+  const total = rows.reduce((n, r) => n + (r.count || 0), 0);
+  const max = Math.max(1, ...rows.map((r) => r.count || 0));
+  return (
+    <View style={{ marginTop: 6, borderWidth: 1, borderColor: "#d6d3d1", borderRadius: 4 }}>
+      <View style={{ flexDirection: "row", backgroundColor: "#f5f5f4", borderBottomWidth: 1, borderBottomColor: "#d6d3d1" }}>
+        {["Entreprise", "Lots", "Effectif"].map((h, i) => (
+          <Cell key={h} w={W[i]} header last={i === 2} align={i === 2 ? "right" : undefined} fontFamily={fontFamily}>{h}</Cell>
+        ))}
+      </View>
+      {rows.map((r, i) => (
+        <View key={`${r.name}-${i}`} wrap={false} style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#e7e5e4", backgroundColor: i % 2 ? "#fafaf9" : "white" }}>
+          <Cell w={W[0]} fontFamily={fontFamily}><Text style={{ fontSize: 8.5, fontWeight: "bold", color: "#292524", fontFamily }}>{r.name}</Text></Cell>
+          <Cell w={W[1]} fontFamily={fontFamily}><Text style={{ fontSize: 8, color: "#57534e", fontFamily }}>{r.lots || "—"}</Text></Cell>
+          <Cell w={W[2]} last align="right" fontFamily={fontFamily}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+              <View style={{ width: 34 * ((r.count || 0) / max), height: 5, backgroundColor: primaryColor, borderRadius: 2 }} />
+              <Text style={{ fontSize: 8.5, fontWeight: "bold", color: "#292524", fontFamily }}>{String(r.count || 0)}</Text>
+            </View>
+          </Cell>
+        </View>
+      ))}
+      <View wrap={false} style={{ flexDirection: "row", backgroundColor: "#f5f5f4" }}>
+        <Cell w="84%" fontFamily={fontFamily}><Text style={{ fontSize: 8.5, fontWeight: "bold", color: "#292524", fontFamily }}>Total sur site</Text></Cell>
+        <Cell w={W[2]} last align="right" fontFamily={fontFamily}><Text style={{ fontSize: 9, fontWeight: "bold", color: "#292524", fontFamily }}>{`${total} pers.`}</Text></Cell>
+      </View>
+    </View>
+  );
+};
