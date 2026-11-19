@@ -496,7 +496,7 @@ async function generateReport(body) {
       const {
         projectId, selectedIds, fields, displayMode, templateConfig,
         reportTitle, participants, planningImages, planningObservations, customSections,
-        reportKind, templateKind,
+        reportKind, templateKind, progress,
       } = body;
       // Type de rapport : il ne garde que les éléments de sa nature.
       const kind = reportKindOf(reportKind);
@@ -519,6 +519,19 @@ async function generateReport(body) {
         supabase.from("Status").select("*").eq("project_id", projectId),
         supabase.from("projects").select("*,organizations(*)").eq("id", projectId).single(),
       ]);
+
+      // Rapport d'avancement : jalons du planning.
+      let milestones = [];
+      if (kind === "avancement") {
+        const { data, error } = await supabase
+          .from("planning_tasks")
+          .select("id, libelle, date_debut, date_fin, avancement, lot_id, ordre")
+          .eq("project_id", projectId)
+          .eq("type", "jalon")
+          .order("date_debut");
+        if (error) console.error("   ❌ Jalons indisponibles:", error.message);
+        else milestones = data || [];
+      }
 
       if (pinsResult.error) throw pinsResult.error;
       if (categoriesResult.error) throw categoriesResult.error;
@@ -644,6 +657,14 @@ async function generateReport(body) {
 
       const kindConfig = applyReportKind(resolvedConfig, kind, templateKind);
       const finalConfig = { ...kindConfig, reportKind: kind, ...(reportTitle ? { reportTitle } : {}) };
+      // Contenu du rapport d'avancement choisi à la composition.
+      if (progress && typeof progress === "object") {
+        const allowed = ["lots", "attention", "milestones", "gantt", "ganttTasks", "planOverviews", "details"];
+        finalConfig.progress = {
+          ...(finalConfig.progress || {}),
+          ...Object.fromEntries(allowed.filter((k) => typeof progress[k] === "boolean").map((k) => [k, progress[k]])),
+        };
+      }
       // Le mode choisi à la composition l'emporte sur celui du modèle.
       if (displayMode) finalConfig.tasks = { ...(finalConfig.tasks || {}), displayMode };
 
@@ -749,6 +770,7 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
           planNames,
           planningImages:    safePlanningImages,
           planningObservations: planningObservations || null,
+          milestones,
           planImagesByPlanId,
           planDimensionsByPlanId,
           reportContent: {
