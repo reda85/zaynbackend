@@ -29,6 +29,7 @@ import { requireAuth, requireProjectMember, visibleAuthIds, visibleIds, basicAut
 import { assetToDataUri, fetchAsset, placeholderImage } from "./lib/safeUrl.js";
 import { startReportJob, getReportJob, describeReportJob } from "./lib/reportJobs.js";
 import { REPORT_KINDS, reportKindOf, applyReportKind } from "./lib/reportKinds.js";
+import { notificationsActive, startNotificationDispatcher } from "./lib/notificationsDispatcher.js";
 // ========================================================================================
 // CANVAS FONT REGISTRATION
 // @napi-rs/canvas does NOT use system fonts on Linux by default.
@@ -1183,7 +1184,9 @@ app.post("/api/pins/assign", requireAuth, async (req, res) => {
     if (!pin) return res.status(403).json({ error: "Access denied: pin not found or not accessible" });
 
     const recipient = pin.assigned_to?.auth_id;
-    if (recipient && recipient !== req.user.id) {
+    // Avec la table notifications, l'assignation est notifiée par la base
+    // (déclencheur sur pdf_pins) : on n'envoie plus de push ici.
+    if (recipient && recipient !== req.user.id && !notificationsActive()) {
       const { data: tokens, error: tokensError } = await supabase
         .from("user_fcm_tokens").select("fcm_token").eq("user_id", recipient);
       if (tokensError) throw tokensError;
@@ -1213,6 +1216,10 @@ app.post("/api/documents/notify", requireAuth, requireProjectMember('body.projec
     if (!['document.uploaded', 'document.versioned'].includes(event)) {
       return res.status(400).json({ error: "Unknown event" });
     }
+
+    // Avec la table notifications, la nouvelle version est notifiée par la
+    // base (déclencheur sur document_versions) : rien à envoyer ici.
+    if (notificationsActive()) return res.json({ success: true, sent: 0, via: "notifications" });
 
     // Destinataires : les membres du projet, sauf l'auteur.
     const { data: rows, error } = await supabase
@@ -1339,6 +1346,9 @@ const server = app.listen(PORT, () => {
   console.log(`Health check: http://localhost:${PORT}/health`);
 });
 
+// Notifications : push des notifications de la table et rappels d'échéance.
+const stopNotifications = startNotificationDispatcher({ supabase, sendExpoNotifications });
+
 // Arrêt propre : on cesse d'accepter des requêtes, on laisse quelques secondes
 // à celles en cours et au worker, puis on sort.
 let shuttingDown = false;
@@ -1346,6 +1356,7 @@ async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`${signal} received, shutting down...`);
+  stopNotifications();
   const force = setTimeout(() => process.exit(0), 9000);
   force.unref();
   const closed = new Promise((resolve) => server.close(resolve));
