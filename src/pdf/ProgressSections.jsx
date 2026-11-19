@@ -122,7 +122,7 @@ export const SectionTitle = ({ title, titleStyle, sub, fontFamily }) => (
 );
 
 // ── Synthèse ─────────────────────────────────────────────────────────────────
-export const ProgressSummary = ({ model, title, primaryColor, fontFamily, backgroundColor = "#f5f5f4" }) => {
+export const ProgressSummary = ({ model, title, period = null, primaryColor, fontFamily, backgroundColor = "#f5f5f4" }) => {
   const Kpi = ({ label, value, sub, color }) => (
     <View style={{ flex: 1, paddingRight: 8 }}>
       <Text style={{ fontSize: 8, fontWeight: "bold", color: "#57534e", fontFamily }}>{label}</Text>
@@ -134,7 +134,7 @@ export const ProgressSummary = ({ model, title, primaryColor, fontFamily, backgr
   return (
     <View wrap={false} style={{ padding: 16, borderRadius: 8, marginBottom: 8, backgroundColor }}>
       <Text style={{ fontSize: 12, fontWeight: "bold", color: primaryColor, fontFamily }}>{title}</Text>
-      <Text style={{ fontSize: 8, color: "#78716c", marginTop: 2, marginBottom: 12, fontFamily }}>Situation au {fmtD(model.today)}</Text>
+      <Text style={{ fontSize: 8, color: "#78716c", marginTop: 2, marginBottom: 12, fontFamily }}>Situation au {fmtD(model.today)}{period ? `  ·  Période : ${period.charAt(0).toLowerCase()}${period.slice(1)}` : ""}</Text>
       <View style={{ flexDirection: "row", alignItems: "flex-end", marginBottom: 14 }}>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 8, fontWeight: "bold", color: "#57534e", fontFamily }}>Avancement global</Text>

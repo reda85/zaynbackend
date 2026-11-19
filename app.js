@@ -490,14 +490,44 @@ console.log(`🔤 Has Inter:`, GlobalFonts.has?.('Inter') ?? 'unknown');
 
 // Génère le rapport, l'enregistre dans le stockage et renvoie son lien signé.
 // Utilisé tel quel (réponse directe) ou en arrière-plan (lib/reportJobs.js).
-async function generateReport(body) {
+const isDay = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+const REPORT_FILE_PREFIX = { reserves: "Rapport_reserves", visite: "Rapport_visite", avancement: "Rapport_avancement", libre: "Rapport" };
+
+// Historique : une ligne par rapport généré (table reports). Un échec ici ne
+// doit pas faire échouer le rapport lui-même.
+async function recordReport({ user, project, projectId, kind, title, storagePath, fileName, fileSize, itemCount, period, templateId }) {
+  try {
+    let createdBy = null;
+    if (user?.id) {
+      const { data } = await supabase.from("members").select("id")
+        .eq("auth_id", user.id).eq("organization_id", project?.organization_id).maybeSingle();
+      createdBy = data?.id ?? null;
+    }
+    const { data, error } = await supabase.from("reports").insert({
+      project_id: projectId, kind, title: title || "Rapport", storage_path: storagePath, file_name: fileName,
+      file_size: fileSize, item_count: itemCount, created_by: createdBy,
+      period_start: period?.start ?? null, period_end: period?.end ?? null, template_id: templateId ?? null,
+    }).select("id").single();
+    if (error) throw error;
+    return data.id;
+  } catch (err) {
+    console.error("   ⚠️ Historique du rapport non enregistré:", err.message);
+    return null;
+  }
+}
+
+async function generateReport(body, user = null) {
     const startTime = Date.now();
     {
       const {
         projectId, selectedIds, fields, displayMode, templateConfig,
         reportTitle, participants, planningImages, planningObservations, customSections,
-        reportKind, templateKind, progress,
+        reportKind, templateKind, progress, period: rawPeriod, templateId,
       } = body;
+      // Période couverte (dates « AAAA-MM-JJ »), affichée et gardée dans l'historique.
+      const period = rawPeriod && (isDay(rawPeriod.start) || isDay(rawPeriod.end))
+        ? { start: isDay(rawPeriod.start) ? rawPeriod.start : null, end: isDay(rawPeriod.end) ? rawPeriod.end : null }
+        : null;
       // Type de rapport : il ne garde que les éléments de sa nature.
       const kind = reportKindOf(reportKind);
       const kindPinType = REPORT_KINDS[kind].pinType;
@@ -656,7 +686,7 @@ async function generateReport(body) {
       resolvedConfig.header.clientLogoUrl = project?.client_logo_url         || '';
 
       const kindConfig = applyReportKind(resolvedConfig, kind, templateKind);
-      const finalConfig = { ...kindConfig, reportKind: kind, ...(reportTitle ? { reportTitle } : {}) };
+      const finalConfig = { ...kindConfig, reportKind: kind, ...(reportTitle ? { reportTitle } : {}), ...(period ? { period } : {}) };
       // Contenu du rapport d'avancement choisi à la composition.
       if (progress && typeof progress === "object") {
         const allowed = ["lots", "attention", "milestones", "gantt", "ganttTasks", "planOverviews", "details"];
@@ -793,9 +823,11 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
       console.log("⏳ Step 5/5: Uploading PDF to Supabase Storage...");
 
       const timestamp = Date.now();
-      const safeProjectName = (project?.name || 'projet').replace(/[^a-zA-Z0-9]/g, '_');
-      const fileName = `Rapport_${safeProjectName}_${timestamp}.pdf`;
-      const storagePath = `generated/${projectId}/${fileName}`;
+      const safeProjectName = (project?.name || 'projet')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+      const day = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Casablanca' });
+      const fileName = `${REPORT_FILE_PREFIX[kind]}_${safeProjectName}_${day}.pdf`;
+      const storagePath = `generated/${projectId}/${timestamp}_${fileName}`;
 
       const { error: uploadError } = await supabase.storage
         .from('reports')
@@ -813,7 +845,7 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
       // ── Generate a 1-hour signed URL ──
       const { data: signedData, error: signedError } = await supabase.storage
         .from('reports')
-        .createSignedUrl(storagePath, 3600);
+        .createSignedUrl(storagePath, 3600, { download: fileName });
 
       if (signedError) {
         console.error('❌ Signed URL generation failed:', signedError);
@@ -823,12 +855,18 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
       const duration = ((Date.now() - startTime) / 1000).toFixed(2);
       console.log(`✅ PDF uploaded and signed in ${duration}s — ${storagePath}\n`);
 
+      const reportId = await recordReport({
+        user, project, projectId, kind, title: finalConfig.reportTitle, storagePath, fileName,
+        fileSize: pdfBuffer.length, itemCount: pins.length, period, templateId,
+      });
+
       return {
         success:     true,
         downloadUrl: signedData.signedUrl,
         fileName,
         fileSize:    pdfBuffer.length,
         storagePath,
+        reportId,
       };
     }
 }
@@ -859,12 +897,12 @@ app.post("/api/report",
     }
 
     if (body.async === true) {
-      const job = startReportJob(req.user.id, () => generateReport(body));
+      const job = startReportJob(req.user.id, () => generateReport(body, req.user));
       return res.status(202).json({ jobId: job.id, status: job.status });
     }
 
     try {
-      res.json(await generateReport(body));
+      res.json(await generateReport(body, req.user));
     } catch (err) {
       console.error("❌ REPORT GENERATION FAILED:", err.message);
       if (!res.headersSent) {
@@ -875,6 +913,39 @@ app.post("/api/report",
       }
     }
   });
+
+// Historique des rapports : lien de téléchargement et suppression. La ligne est
+// lue (ou supprimée) au nom de l'appelant, donc à travers les RLS de la table.
+app.get("/api/reports/:id/download", requireAuth, async (req, res) => {
+  try {
+    const { data: row, error } = await req.db.from("reports")
+      .select("id, storage_path, file_name").eq("id", req.params.id).maybeSingle();
+    if (error) throw error;
+    if (!row) return res.status(404).json({ error: "Rapport introuvable" });
+    const { data, error: signError } = await supabase.storage.from("reports")
+      .createSignedUrl(row.storage_path, 3600, { download: row.file_name });
+    if (signError) return res.status(410).json({ error: "Le fichier de ce rapport n'est plus disponible" });
+    res.json({ downloadUrl: data.signedUrl, fileName: row.file_name });
+  } catch (err) {
+    console.error("❌ report download:", err.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.delete("/api/reports/:id", requireAuth, async (req, res) => {
+  try {
+    const { data: rows, error } = await req.db.from("reports")
+      .delete().eq("id", req.params.id).select("storage_path");
+    if (error) throw error;
+    if (!rows?.length) return res.status(404).json({ error: "Rapport introuvable ou suppression non autorisée" });
+    const { error: removeError } = await supabase.storage.from("reports").remove(rows.map((r) => r.storage_path));
+    if (removeError) console.error("   ⚠️ Fichier du rapport non supprimé:", removeError.message);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("❌ report delete:", err.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // État d'un rapport demandé avec `async: true` (rapport de tâches ou de médias).
 app.get("/api/report/jobs/:jobId", requireAuth, (req, res) => {
