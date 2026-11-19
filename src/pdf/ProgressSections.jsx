@@ -121,8 +121,26 @@ export const SectionTitle = ({ title, titleStyle, sub, fontFamily }) => (
   </View>
 );
 
+// Réglages des sections du rapport d'avancement (config.progressSections du
+// modèle). Même table côté web (lib/data/reportKinds.js).
+export const PROGRESS_SECTION_DEFAULTS = {
+  summary:    { global: true, lots: true, lateLots: true, tasks: true, lateTasks: true, nextMilestone: true },
+  lots:       { title: "Lots", company: true, planned: true, real: true, progress: true, tasks: true, state: true },
+  attention:  { title: "Points d'attention", lots: true, tasks: true },
+  milestones: { title: "Jalons", upcomingOnly: false },
+  gantt:      { title: "Planning" },
+  workforce:  { title: "Effectifs de site", lots: true, total: true },
+  photos:     { title: "Reportage photo", perPage: 1, plan: true, caption: true },
+  conclusion: { title: "Recommandations et conclusion" },
+};
+export const sectionOpts = (config, key) => {
+  const o = { ...PROGRESS_SECTION_DEFAULTS[key], ...(config?.progressSections?.[key] || {}) };
+  if ("title" in o && !String(o.title || "").trim()) o.title = PROGRESS_SECTION_DEFAULTS[key].title;
+  return o;
+};
+
 // ── Synthèse ─────────────────────────────────────────────────────────────────
-export const ProgressSummary = ({ model, title, period = null, primaryColor, fontFamily, backgroundColor = "#f5f5f4" }) => {
+export const ProgressSummary = ({ model, title, period = null, primaryColor, fontFamily, backgroundColor = "#f5f5f4", show = PROGRESS_SECTION_DEFAULTS.summary }) => {
   const Kpi = ({ label, value, sub, color }) => (
     <View style={{ flex: 1, paddingRight: 8 }}>
       <Text style={{ fontSize: 8, fontWeight: "bold", color: "#57534e", fontFamily }}>{label}</Text>
@@ -135,7 +153,7 @@ export const ProgressSummary = ({ model, title, period = null, primaryColor, fon
     <View wrap={false} style={{ padding: 16, borderRadius: 8, marginBottom: 8, backgroundColor }}>
       <Text style={{ fontSize: 12, fontWeight: "bold", color: primaryColor, fontFamily }}>{title}</Text>
       <Text style={{ fontSize: 8, color: "#78716c", marginTop: 2, marginBottom: 12, fontFamily }}>Situation au {fmtD(model.today)}{period ? `  ·  Période : ${period.charAt(0).toLowerCase()}${period.slice(1)}` : ""}</Text>
-      <View style={{ flexDirection: "row", alignItems: "flex-end", marginBottom: 14 }}>
+      {show.global !== false && <View style={{ flexDirection: "row", alignItems: "flex-end", marginBottom: 14 }}>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 8, fontWeight: "bold", color: "#57534e", fontFamily }}>Avancement global</Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 4 }}>
@@ -144,17 +162,17 @@ export const ProgressSummary = ({ model, title, period = null, primaryColor, fon
           </View>
           <Text style={{ fontSize: 7.5, color: "#78716c", marginTop: 3, fontFamily }}>Moyenne des lots pondérée par leur durée prévue</Text>
         </View>
-      </View>
+      </View>}
       <View style={{ flexDirection: "row" }}>
-        <Kpi label="Lots" value={model.lots.length} sub={`${counts.done} terminé${counts.done > 1 ? "s" : ""} · ${counts.ongoing} en cours · ${counts.todo} à venir`} />
-        <Kpi label="Lots en retard" value={counts.late} color={counts.late ? "#b91c1c" : undefined} />
-        <Kpi label="Tâches" value={`${tasks.done}/${tasks.total}`} sub="terminées" />
-        <Kpi label="Tâches en retard" value={tasks.late.length} color={tasks.late.length ? "#b91c1c" : undefined} />
-        <Kpi
+        {show.lots !== false && <Kpi label="Lots" value={model.lots.length} sub={`${counts.done} terminé${counts.done > 1 ? "s" : ""} · ${counts.ongoing} en cours · ${counts.todo} à venir`} />}
+        {show.lateLots !== false && <Kpi label="Lots en retard" value={counts.late} color={counts.late ? "#b91c1c" : undefined} />}
+        {show.tasks !== false && <Kpi label="Tâches" value={`${tasks.done}/${tasks.total}`} sub="terminées" />}
+        {show.lateTasks !== false && <Kpi label="Tâches en retard" value={tasks.late.length} color={tasks.late.length ? "#b91c1c" : undefined} />}
+        {show.nextMilestone !== false && <Kpi
           label="Prochain jalon"
           value={nextMilestone ? fmtShort(nextMilestone.date) : "—"}
           sub={nextMilestone ? nextMilestone.libelle : model.jalons.length ? "Tous les jalons sont passés" : "Aucun jalon"}
-        />
+        />}
       </View>
     </View>
   );
@@ -180,36 +198,51 @@ const Period = ({ start, end, openEnd = null, empty, endColor, fontFamily }) => 
   );
 };
 
-export const LotsTable = ({ model, primaryColor, fontFamily }) => {
-  const W = ["22%", "16%", "15%", "15%", "14%", "8%", "10%"];
+// Colonnes du tableau des lots : clé du réglage, en-tête, largeur relative, contenu.
+const LOT_COLUMNS = [
+  { key: null,       label: "Lot",        w: 22 },
+  { key: "company",  label: "Entreprise", w: 16 },
+  { key: "planned",  label: "Prévu",      w: 15 },
+  { key: "real",     label: "Réel",       w: 15 },
+  { key: "progress", label: "Avancement", w: 14 },
+  { key: "tasks",    label: "Tâches",     w: 8 },
+  { key: "state",    label: "État",       w: 10 },
+];
+
+export const LotsTable = ({ model, primaryColor, fontFamily, opts = PROGRESS_SECTION_DEFAULTS.lots }) => {
   if (!model.lots.length) return <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>Aucun lot planifié.</Text>;
+  const cols = LOT_COLUMNS.filter((c) => !c.key || opts[c.key] !== false);
+  const total = cols.reduce((n, c) => n + c.w, 0);
+  const width = (c) => `${(c.w / total) * 100}%`;
+  const cell = (c, l) => {
+    switch (c.key) {
+      case null: return <Text style={{ fontSize: 8.5, fontWeight: "bold", color: "#292524", fontFamily }}>{l.name}</Text>;
+      case "company": return l.company ?? "—";
+      case "planned": return <Period start={l.plannedStart} end={l.plannedEnd} endColor={l.state === "late" ? "#b91c1c" : undefined} empty="Non planifié" fontFamily={fontFamily} />;
+      case "real": return <Period start={l.realStart} end={l.realEnd} openEnd={l.realStart ? "en cours" : null} empty="Non démarré" fontFamily={fontFamily} />;
+      case "progress": return (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+          <Bar value={l.progress} width={34} color={primaryColor} />
+          <Text style={{ fontSize: 7.5, color: "#292524", fontFamily }}>{l.progress} %</Text>
+        </View>
+      );
+      case "tasks": return l.tasks.length ? `${l.tasksDone}/${l.tasks.length}` : "—";
+      case "state": return <Pill state={l.state} fontFamily={fontFamily}>{l.state === "late" ? `Retard ${l.lateDays} j` : undefined}</Pill>;
+      default: return null;
+    }
+  };
   return (
     <View style={{ marginTop: 6, borderWidth: 1, borderColor: "#d6d3d1", borderRadius: 4 }}>
       <View style={{ flexDirection: "row", backgroundColor: "#f5f5f4", borderBottomWidth: 1, borderBottomColor: "#d6d3d1" }}>
-        {["Lot", "Entreprise", "Prévu", "Réel", "Avancement", "Tâches", "État"].map((h, i) => (
-          <Cell key={h} w={W[i]} header last={i === 6} fontFamily={fontFamily}>{h}</Cell>
+        {cols.map((c, i) => (
+          <Cell key={c.label} w={width(c)} header last={i === cols.length - 1} fontFamily={fontFamily}>{c.label}</Cell>
         ))}
       </View>
       {model.lots.map((l, i) => (
         <View key={l.id} wrap={false} style={{ flexDirection: "row", ...(i < model.lots.length - 1 ? { borderBottomWidth: 1, borderBottomColor: "#e7e5e4" } : {}), backgroundColor: i % 2 ? "#fafaf9" : "white" }}>
-          <Cell w={W[0]} fontFamily={fontFamily}><Text style={{ fontSize: 8.5, fontWeight: "bold", color: "#292524", fontFamily }}>{l.name}</Text></Cell>
-          <Cell w={W[1]} fontFamily={fontFamily}>{l.company ?? "—"}</Cell>
-          <Cell w={W[2]} fontFamily={fontFamily}>
-            <Period start={l.plannedStart} end={l.plannedEnd} endColor={l.state === "late" ? "#b91c1c" : undefined} empty="Non planifié" fontFamily={fontFamily} />
-          </Cell>
-          <Cell w={W[3]} fontFamily={fontFamily}>
-            <Period start={l.realStart} end={l.realEnd} openEnd={l.realStart ? "en cours" : null} empty="Non démarré" fontFamily={fontFamily} />
-          </Cell>
-          <Cell w={W[4]} fontFamily={fontFamily}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-              <Bar value={l.progress} width={34} color={primaryColor} />
-              <Text style={{ fontSize: 7.5, color: "#292524", fontFamily }}>{l.progress} %</Text>
-            </View>
-          </Cell>
-          <Cell w={W[5]} fontFamily={fontFamily}>{l.tasks.length ? `${l.tasksDone}/${l.tasks.length}` : "—"}</Cell>
-          <Cell w={W[6]} last fontFamily={fontFamily}>
-            <Pill state={l.state} fontFamily={fontFamily}>{l.state === "late" ? `Retard ${l.lateDays} j` : undefined}</Pill>
-          </Cell>
+          {cols.map((c, ci) => (
+            <Cell key={c.label} w={width(c)} last={ci === cols.length - 1} fontFamily={fontFamily}>{cell(c, l)}</Cell>
+          ))}
         </View>
       ))}
     </View>
@@ -217,11 +250,12 @@ export const LotsTable = ({ model, primaryColor, fontFamily }) => {
 };
 
 // ── Jalons ───────────────────────────────────────────────────────────────────
-export const MilestonesList = ({ model, fontFamily }) => {
-  if (!model.jalons.length) return <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>Aucun jalon.</Text>;
+export const MilestonesList = ({ model, fontFamily, upcomingOnly = false }) => {
+  const jalons = upcomingOnly ? model.jalons.filter((j) => !j.done) : model.jalons;
+  if (!jalons.length) return <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>{upcomingOnly ? "Aucun jalon à venir." : "Aucun jalon."}</Text>;
   return (
     <View style={{ marginTop: 6 }}>
-      {model.jalons.map((j) => (
+      {jalons.map((j) => (
         <View key={j.id} wrap={false} style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: "#f5f5f4" }}>
           <View style={{ width: 8, height: 8, transform: "rotate(45deg)", backgroundColor: j.done ? "#15803d" : j.late ? "#b91c1c" : "#44403c" }} />
           <Text style={{ width: 64, fontSize: 8.5, color: "#292524", fontFamily }}>{fmtD(j.date)}</Text>
@@ -236,9 +270,9 @@ export const MilestonesList = ({ model, fontFamily }) => {
 };
 
 // ── Points d'attention ───────────────────────────────────────────────────────
-export const AttentionList = ({ model, categories, fontFamily }) => {
-  const lateLots = model.lots.filter((l) => l.state === "late");
-  const lateTasks = [...model.tasks.late].sort((a, b) => b.lateDays - a.lateDays);
+export const AttentionList = ({ model, categories, fontFamily, showLots = true, showTasks = true }) => {
+  const lateLots = showLots ? model.lots.filter((l) => l.state === "late") : [];
+  const lateTasks = showTasks ? [...model.tasks.late].sort((a, b) => b.lateDays - a.lateDays) : [];
   if (!lateLots.length && !lateTasks.length) {
     return <Text style={{ fontSize: 9, color: "#15803d", marginTop: 4, fontFamily }}>Aucun retard à signaler au {fmtD(model.today)}.</Text>;
   }
@@ -252,7 +286,7 @@ export const AttentionList = ({ model, categories, fontFamily }) => {
   return (
     <View style={{ marginTop: 6 }}>
       {lateLots.map((l) => (
-        <Line key={l.id} left={`Lot ${l.name}${l.company ? ` (${l.company})` : ""} : ${l.progress} %`} mid={`Fin prévue le ${fmtD(l.plannedEnd)}`} right={`${l.lateDays} j de retard`} />
+        <Line key={l.id} left={`${/^lot\b/i.test(l.name) ? "" : "Lot "}${l.name}${l.company ? ` (${l.company})` : ""} : ${l.progress} %`} mid={`Fin prévue le ${fmtD(l.plannedEnd)}`} right={`${l.lateDays} j de retard`} />
       ))}
       {lateTasks.map((t) => (
         <Line
@@ -468,14 +502,14 @@ const fitBox = (dims, maxW, maxH) => {
   return maxW / maxH > r ? { w: maxH * r, h: maxH } : { w: maxW, h: maxW / r };
 };
 
-export const PhotoProgressPage = ({ item, width, height, planImagesByPlanId = {}, planDimensionsByPlanId = {}, primaryColor, fontFamily }) => {
+export const PhotoProgressPage = ({ item, width, height, planImagesByPlanId = {}, planDimensionsByPlanId = {}, primaryColor, fontFamily, showPlan = true, showCaption = true }) => {
   const { task, lot, photo } = item;
   const spot = photoSpot(item);
-  const planImage = spot ? planImagesByPlanId[spot.planId] : null;
+  const planImage = showPlan && spot ? planImagesByPlanId[spot.planId] : null;
   const GAP = 16;
   const colW = planImage ? (width - GAP) / 2 : width * 0.62;
   const planBox = planImage ? fitBox(planDimensionsByPlanId[spot.planId], colW - 16, height - 16) : null;
-  const photoH = height - 92;
+  const photoH = showCaption ? height - 92 : height;
   const late = task.late;
   const verb = task.progress >= 100 ? "sont achevés à" : task.progress > 0 ? "sont réalisés à" : "ne sont pas encore engagés :";
   const takenOn = toDay(photo.date || photo.created_at);
@@ -512,13 +546,13 @@ export const PhotoProgressPage = ({ item, width, height, planImagesByPlanId = {}
       ) : null}
       <View style={{ width: colW, height }}>
         <Image src={photo.public_url} style={{ width: colW, height: photoH, objectFit: "cover", borderRadius: 4 }} />
-        {caption}
+        {showCaption ? caption : null}
       </View>
       {!planImage ? (
         <View style={{ flex: 1, paddingTop: 4 }}>
           <Text style={{ fontSize: 26, fontWeight: "bold", color: task.progress >= 100 ? "#15803d" : late ? "#b91c1c" : "#292524", fontFamily }}>{task.progress}{"\u00a0%"}</Text>
           <Text style={{ fontSize: 8, color: "#78716c", fontFamily }}>d'avancement</Text>
-          <Text style={{ fontSize: 8, color: "#a8a29e", marginTop: 14, fontFamily }}>Emplacement non renseigné</Text>
+          {showPlan ? <Text style={{ fontSize: 8, color: "#a8a29e", marginTop: 14, fontFamily }}>Emplacement non renseigné</Text> : null}
         </View>
       ) : null}
     </View>
@@ -527,21 +561,23 @@ export const PhotoProgressPage = ({ item, width, height, planImagesByPlanId = {}
 
 // ── Effectifs de site ────────────────────────────────────────────────────────
 // Personnel présent par entreprise, saisi à la composition du rapport.
-export const WorkforceTable = ({ rows = [], primaryColor, fontFamily }) => {
-  const W = ["44%", "40%", "16%"];
+export const WorkforceTable = ({ rows = [], primaryColor, fontFamily, showLots = true, showTotal = true }) => {
+  const W = showLots ? ["44%", "40%", "16%"] : ["84%", null, "16%"];
+  const heads = showLots ? ["Entreprise", "Lots", "Effectif"] : ["Entreprise", "Effectif"];
+  const widths = showLots ? W : [W[0], W[2]];
   const total = rows.reduce((n, r) => n + (r.count || 0), 0);
   const max = Math.max(1, ...rows.map((r) => r.count || 0));
   return (
     <View style={{ marginTop: 6, borderWidth: 1, borderColor: "#d6d3d1", borderRadius: 4 }}>
       <View style={{ flexDirection: "row", backgroundColor: "#f5f5f4", borderBottomWidth: 1, borderBottomColor: "#d6d3d1" }}>
-        {["Entreprise", "Lots", "Effectif"].map((h, i) => (
-          <Cell key={h} w={W[i]} header last={i === 2} align={i === 2 ? "right" : undefined} fontFamily={fontFamily}>{h}</Cell>
+        {heads.map((h, i) => (
+          <Cell key={h} w={widths[i]} header last={i === heads.length - 1} align={i === heads.length - 1 ? "right" : undefined} fontFamily={fontFamily}>{h}</Cell>
         ))}
       </View>
       {rows.map((r, i) => (
         <View key={`${r.name}-${i}`} wrap={false} style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#e7e5e4", backgroundColor: i % 2 ? "#fafaf9" : "white" }}>
           <Cell w={W[0]} fontFamily={fontFamily}><Text style={{ fontSize: 8.5, fontWeight: "bold", color: "#292524", fontFamily }}>{r.name}</Text></Cell>
-          <Cell w={W[1]} fontFamily={fontFamily}><Text style={{ fontSize: 8, color: "#57534e", fontFamily }}>{r.lots || "—"}</Text></Cell>
+          {showLots && <Cell w={W[1]} fontFamily={fontFamily}><Text style={{ fontSize: 8, color: "#57534e", fontFamily }}>{r.lots || "—"}</Text></Cell>}
           <Cell w={W[2]} last align="right" fontFamily={fontFamily}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
               <View style={{ width: 34 * ((r.count || 0) / max), height: 5, backgroundColor: primaryColor, borderRadius: 2 }} />
@@ -550,10 +586,10 @@ export const WorkforceTable = ({ rows = [], primaryColor, fontFamily }) => {
           </Cell>
         </View>
       ))}
-      <View wrap={false} style={{ flexDirection: "row", backgroundColor: "#f5f5f4" }}>
+      {showTotal && <View wrap={false} style={{ flexDirection: "row", backgroundColor: "#f5f5f4" }}>
         <Cell w="84%" fontFamily={fontFamily}><Text style={{ fontSize: 8.5, fontWeight: "bold", color: "#292524", fontFamily }}>Total sur site</Text></Cell>
         <Cell w={W[2]} last align="right" fontFamily={fontFamily}><Text style={{ fontSize: 9, fontWeight: "bold", color: "#292524", fontFamily }}>{`${total} pers.`}</Text></Cell>
-      </View>
+      </View>}
     </View>
   );
 };
