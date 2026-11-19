@@ -92,6 +92,10 @@ const ICONS = {
 };
 
 const fmtDay = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "-");
+// Période choisie à la génération ({ start, end } en « AAAA-MM-JJ »).
+const dayFr = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("fr-FR");
+export const periodLabel = (p) =>
+  p?.start && p?.end ? `Du ${dayFr(p.start)} au ${dayFr(p.end)}` : p?.start ? `Depuis le ${dayFr(p.start)}` : p?.end ? `Jusqu'au ${dayFr(p.end)}` : "-";
 
 // Avancement d'une tâche (0-100), en barre courte et pourcentage.
 const ProgressCell = ({ value, fontFamily, color = "#44403c", width = 40 }) => {
@@ -1126,7 +1130,7 @@ export default function PdfReportServer({
       case 'summary':
         if (!templateConfig.summary?.enabled) return null;
         if (isProgress) {
-          return <ProgressSummary key="summary" model={progressModel} title={templateConfig.reportTitle} primaryColor={primaryColor} fontFamily={fontFamily} backgroundColor={templateConfig.summary.backgroundColor} />;
+          return <ProgressSummary key="summary" model={progressModel} period={templateConfig.period ? periodLabel(templateConfig.period) : null} title={templateConfig.reportTitle} primaryColor={primaryColor} fontFamily={fontFamily} backgroundColor={templateConfig.summary.backgroundColor} />;
         }
         return (
           <View key="summary" style={{ padding: 16, borderRadius: 8, marginBottom: 8, backgroundColor: templateConfig.summary.backgroundColor || "#f5f5f4" }}>
@@ -1136,7 +1140,7 @@ export default function PdfReportServer({
                 <View style={{ width: "50%" }}>
                   <Text style={{ fontSize: 8, fontWeight: "bold", color: "#44403c", marginBottom: 4, fontFamily }}>Période</Text>
                   <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>
-                    {selectedPins.length > 0 ? (() => {
+                    {templateConfig.period ? periodLabel(templateConfig.period) : selectedPins.length > 0 ? (() => {
                       const dates = selectedPins.map((p) => new Date(p.created_at));
                       return `${new Date(Math.min(...dates)).toLocaleDateString("fr-FR")} - ${new Date(Math.max(...dates)).toLocaleDateString("fr-FR")}`;
                     })() : "-"}
