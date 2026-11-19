@@ -325,20 +325,26 @@ const TableCell = ({ children, header, width, align = "left", border = true, con
   </View>
 );
 
+// Début et avancement d'une tâche : deux champs ; les anciens modèles et
+// clients n'envoient que « planning », qui vaut pour les deux.
+const showStart    = (f = {}) => f.startDate ?? Boolean(f.planning);
+const showProgress = (f = {}) => f.progress ?? Boolean(f.planning);
+
 const TableView = ({ selectedPins, categories, statuses, fields: rawFields, config, fontFamily, startIndex = 0, lead = null }) => {
   // Groupé par lot : le lot est déjà en tête de groupe.
   const fields = config?.tasks?.groupBy === "category" ? { ...rawFields, category: false } : rawFields;
   const photoSizeMap = { small: { width: 80, height: 80 }, medium: { width: 120, height: 120 }, large: { width: 160, height: 160 } };
   const photoSize    = photoSizeMap[config?.tableView?.photoSize || 'medium'];
   // Largeurs des colonnes : la colonne du nom prend ce qui reste.
-  const planning = Boolean(fields.planning);
+  const start = showStart(fields), prog = showProgress(fields);
+  const planning = start || prog;
   const pct = (n) => `${n}%`;
   const cols = {
     index: config?.tableView?.showIndex ? 5 : 0, id: 8,
     category: fields.category ? 10 : 0, status: fields.status ? (planning ? 11 : 12) : 0,
     assignedTo: fields.assignedTo ? (planning ? 11 : 12) : 0,
-    start: planning ? 9 : 0, dueDate: fields.dueDate ? (planning ? 9 : 12) : 0,
-    progress: planning ? 12 : 0, snapshot: fields.snapshot ? (planning ? 9 : 11) : 0,
+    start: start ? 9 : 0, dueDate: fields.dueDate ? (planning ? 9 : 12) : 0,
+    progress: prog ? 12 : 0, snapshot: fields.snapshot ? (planning ? 9 : 11) : 0,
   };
   const used = Object.values(cols).reduce((a, b) => a + b, 0);
   const W = Object.fromEntries(Object.entries(cols).map(([k, v]) => [k, pct(v)]));
@@ -370,9 +376,9 @@ const TableView = ({ selectedPins, categories, statuses, fields: rawFields, conf
           </TableCell>
         )}
         {fields.assignedTo && <TableCell config={config} fontFamily={fontFamily} width={W.assignedTo}><Text style={{ fontSize: 7, fontFamily }}>{pin.assigned_to?.name || "-"}</Text></TableCell>}
-        {planning          && <TableCell config={config} fontFamily={fontFamily} width={W.start}><Text style={{ fontSize: 7, fontFamily }}>{fmtDay(pin.date_debut)}</Text></TableCell>}
+        {start             && <TableCell config={config} fontFamily={fontFamily} width={W.start}><Text style={{ fontSize: 7, fontFamily }}>{fmtDay(pin.date_debut)}</Text></TableCell>}
         {fields.dueDate    && <TableCell config={config} fontFamily={fontFamily} width={W.dueDate}><Text style={{ fontSize: 7, fontFamily, color: isLate(pin) ? "#b91c1c" : undefined }}>{fmtDay(pin.due_date)}</Text></TableCell>}
-        {planning          && <TableCell config={config} fontFamily={fontFamily} width={W.progress}><ProgressCell value={pin.avancement} fontFamily={fontFamily} width={28} color={config?.primaryColor} /></TableCell>}
+        {prog              && <TableCell config={config} fontFamily={fontFamily} width={W.progress}><ProgressCell value={pin.avancement} fontFamily={fontFamily} width={28} color={config?.primaryColor} /></TableCell>}
         {fields.snapshot   && <TableCell config={config} fontFamily={fontFamily} width={W.snapshot} border={false}><Text style={{ fontSize: 7, fontFamily }}>{pin.pdf_name || "-"}</Text></TableCell>}
       </View>
     );
@@ -389,9 +395,9 @@ const TableView = ({ selectedPins, categories, statuses, fields: rawFields, conf
           {fields.category   && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.category}>Lot</TableCell>}
           {fields.status     && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.status}>Statut</TableCell>}
           {fields.assignedTo && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.assignedTo}>Assigné à</TableCell>}
-          {fields.planning   && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.start}>Début</TableCell>}
+          {start             && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.start}>Début</TableCell>}
           {fields.dueDate    && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.dueDate}>Échéance</TableCell>}
-          {fields.planning   && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.progress}>Avancement</TableCell>}
+          {prog              && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.progress}>Avancement</TableCell>}
           {fields.snapshot   && <TableCell config={config} fontFamily={fontFamily} header small={planning} width={W.snapshot} border={false}>Plan</TableCell>}
         </View>
         {selectedPins.map((pin, i) => renderRow(pin, i, compact))}
@@ -462,7 +468,7 @@ const ListView = ({ selectedPins, categories, statuses, fields: rawFields, confi
                       <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{pin.assigned_to?.name || "-"}</Text>
                     </View>
                   )}
-                  {fields.planning && (
+                  {showStart(fields) && (
                     <View style={{ flexDirection: "row", marginVertical: 2 }}>
                       <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Début:</Text>
                       <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{fmtDay(pin.date_debut)}</Text>
@@ -475,7 +481,7 @@ const ListView = ({ selectedPins, categories, statuses, fields: rawFields, confi
                       <Text style={{ fontSize: 9, color: "#292524", fontFamily }}>{pin.due_date ? new Date(pin.due_date).toLocaleDateString("fr-FR") : "-"}</Text>
                     </View>
                   )}
-                  {fields.planning && (
+                  {showProgress(fields) && (
                     <>
                       <View style={{ flexDirection: "row", alignItems: "center", marginVertical: 2 }}>
                         <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", width: 80, fontFamily }}>Avancement:</Text>
@@ -1107,8 +1113,9 @@ export default function PdfReportServer({
       const after = order.indexOf("tasks");
       order.splice(after >= 0 ? after + 1 : order.length, 0, "progressPhotos");
     }
-    // Recommandations et conclusion ferment le rapport.
-    return [...order.filter((id) => id !== "progressConclusion"), "progressConclusion"];
+    // Recommandations et conclusion ferment le rapport, sauf si le modèle les
+    // place ailleurs.
+    return order.includes("progressConclusion") ? order : [...order, "progressConclusion"];
   })();
   const pinsByStatus      = groupBy(selectedPins, "status_id");
   const actualDisplayMode = templateConfig.tasks?.displayMode || displayMode;
