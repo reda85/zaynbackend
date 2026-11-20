@@ -494,6 +494,32 @@ console.log(`🔤 Has Inter:`, GlobalFonts.has?.('Inter') ?? 'unknown');
 const isDay = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
 const REPORT_FILE_PREFIX = { reserves: "Rapport_reserves", visite: "Rapport_visite", avancement: "Rapport_avancement", libre: "Rapport" };
 
+// Cartouche : préfixe du n° de document par type (« RR-012 »).
+const DOC_NUMBER_PREFIX = { reserves: "RR", visite: "RV", avancement: "RA", libre: "R" };
+
+// Identité saisie à la composition : n°, indice, phase, visa (noms).
+function cleanCartoucheInput(raw) {
+  const str = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+  const r = raw && typeof raw === "object" ? raw : {};
+  const visa = r.visa && typeof r.visa === "object" ? r.visa : {};
+  const cleanVisa = Object.fromEntries(["redige", "verifie", "approuve"].map((k) => [k, str(visa[k], 120)]).filter(([, v]) => v));
+  return {
+    docNumber: str(r.docNumber, 60),
+    revision: str(r.revision, 12),
+    phase: str(r.phase, 40),
+    visa: Object.keys(cleanVisa).length ? cleanVisa : null,
+  };
+}
+
+// N° d'ordre suivant pour ce type de rapport dans le projet.
+async function nextReportSeq(projectId, kind) {
+  const { data, error } = await supabase.from("reports").select("seq")
+    .eq("project_id", projectId).eq("kind", kind).not("seq", "is", null)
+    .order("seq", { ascending: false }).limit(1);
+  if (error) { console.error("   ⚠️ N° de rapport indisponible:", error.message); return null; }
+  return (data?.[0]?.seq ?? 0) + 1;
+}
+
 // Historique : une ligne par rapport généré (table reports). Un échec ici ne
 // doit pas faire échouer le rapport lui-même.
 // Effectifs et conclusion saisis à la composition d'un rapport d'avancement.
@@ -508,7 +534,7 @@ function cleanProgressContent(raw) {
   return { workforce, workforceDate: isDay(raw.workforceDate) ? raw.workforceDate : null, conclusion };
 }
 
-async function recordReport({ user, project, projectId, kind, title, storagePath, fileName, fileSize, itemCount, period, templateId }) {
+async function recordReport({ user, project, projectId, kind, title, storagePath, fileName, fileSize, itemCount, period, templateId, identity }) {
   try {
     let createdBy = null;
     if (user?.id) {
@@ -520,6 +546,8 @@ async function recordReport({ user, project, projectId, kind, title, storagePath
       project_id: projectId, kind, title: title || "Rapport", storage_path: storagePath, file_name: fileName,
       file_size: fileSize, item_count: itemCount, created_by: createdBy,
       period_start: period?.start ?? null, period_end: period?.end ?? null, template_id: templateId ?? null,
+      seq: identity?.seq ?? null, doc_number: identity?.number || null, revision: identity?.revision || null,
+      phase: identity?.phase || null, visa: identity?.visa ?? null,
     }).select("id").single();
     if (error) throw error;
     return data.id;
@@ -538,6 +566,7 @@ async function generateReport(body, user = null) {
         reportKind, templateKind, progress, period: rawPeriod, templateId,
         progressContent: rawProgressContent,
         lotIds: rawLotIds,
+        cartouche: rawCartouche,
       } = body;
       // Rapport par lot(s) : seuls leurs éléments, et leurs noms en page de garde.
       const lotIds = new Set((Array.isArray(rawLotIds) ? rawLotIds : []).slice(0, 200).map(String));
@@ -723,6 +752,44 @@ async function generateReport(body, user = null) {
       // Le mode choisi à la composition l'emporte sur celui du modèle.
       if (displayMode) finalConfig.tasks = { ...(finalConfig.tasks || {}), displayMode };
 
+      // ── Cartouche : n° du document, intervenants, visa ──
+      const cartoucheInput = cleanCartoucheInput(rawCartouche);
+      const cartoucheOpts = finalConfig.cartouche || {};
+      const cartoucheOn = cartoucheOpts.enabled ?? finalConfig.design === "cartouches";
+      const seq = await nextReportSeq(projectId, kind);
+      const prefix = (typeof cartoucheOpts.numberPrefix === "string" && cartoucheOpts.numberPrefix.trim()) || DOC_NUMBER_PREFIX[kind];
+      const docIdentity = {
+        seq,
+        number: cartoucheInput.docNumber || (seq ? `${prefix}-${String(seq).padStart(3, "0")}` : ""),
+        revision: cartoucheInput.revision || "A",
+        phase: cartoucheInput.phase,
+        visa: cartoucheInput.visa,
+      };
+      if (cartoucheOn) {
+        let parties = [];
+        if (cartoucheOpts.showParties !== false) {
+          const { data, error } = await supabase.from("project_parties")
+            .select("role, name, detail, logo_url, sort_order").eq("project_id", projectId).order("sort_order").order("created_at");
+          if (error) console.error("   ⚠️ Intervenants indisponibles:", error.message);
+          parties = await Promise.all((data || []).slice(0, 24).map(async (p) => ({
+            role: p.role, name: p.name, detail: p.detail || null,
+            logo: cartoucheOpts.showLogos !== false && p.logo_url ? await assetToDataUri(p.logo_url, { width: 300, quality: 85 }) : null,
+          })));
+        }
+        finalConfig.docIdentity = {
+          ...docIdentity,
+          date: new Date().toLocaleDateString("fr-FR", { timeZone: "Africa/Casablanca" }),
+          parties,
+          show: {
+            identity: cartoucheOpts.showIdentity !== false,
+            parties: cartoucheOpts.showParties !== false,
+            logos: cartoucheOpts.showLogos !== false,
+            visa: cartoucheOpts.showVisa !== false,
+            footer: cartoucheOpts.footerIdentity !== false,
+          },
+        };
+      }
+
       // ── Normalize customSections (accept array or object form) ──
       let customSectionContents = {};
       if (customSections) {
@@ -896,7 +963,7 @@ for (let i = 0; i < photoTasks.length; i += PHOTO_CONCURRENCY) {
           ? `${finalConfig.reportTitle} — ${/^lots?\b/i.test(scopeLots[0].name) ? "" : scopeLots.length > 1 ? "Lots " : "Lot "}${scopeLots.map((l) => l.name).join(" / ")}`.slice(0, 300)
           : finalConfig.reportTitle,
         storagePath, fileName,
-        fileSize: pdfBuffer.length, itemCount: pins.length, period, templateId,
+        fileSize: pdfBuffer.length, itemCount: pins.length, period, templateId, identity: docIdentity,
       });
 
       return {

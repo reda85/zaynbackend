@@ -1174,6 +1174,145 @@ const CoverCartouche = ({ config, primaryColor, selectedProject, scopeLots = [],
   );
 };
 
+// Cartouche du document : identité (n°, indice, phase, date), intervenants du
+// projet avec leur logo, et visa. Résolu par le serveur dans config.docIdentity.
+// Noms et rôles coupés entre les mots seulement (« Casablanca », pas « Casablan-ca »).
+const wholeWords = (word) => [word];
+const VISA_LABELS = [["redige", "Rédigé par"], ["verifie", "Vérifié par"], ["approuve", "Approuvé par"]];
+
+// Même contenu dans le design standard : sans cadres, sur fond clair avec
+// filet de couleur, comme le bandeau du lot.
+const DocIdentityPlain = ({ identity, primaryColor, fontFamily, compact }) => {
+  const cells = identity.show.identity ? [
+    ["N° document", identity.number], ["Indice", identity.revision], ["Phase", identity.phase], ["Date", identity.date],
+  ].filter(([, v]) => v) : [];
+  const parties = identity.show.parties ? identity.parties || [] : [];
+  const visa = identity.show.visa ? VISA_LABELS.map(([k, label]) => [label, identity.visa?.[k] || ""]) : [];
+  if (!cells.length && !parties.length && !visa.length) return null;
+  const label = { fontSize: 7, fontWeight: "bold", color: primaryColor, textTransform: "uppercase", letterSpacing: 0.8, fontFamily };
+  const group = (title, children, first) => (
+    <View style={{ ...(first ? {} : { marginTop: compact ? 8 : 12, paddingTop: compact ? 8 : 10, borderTopWidth: 1, borderTopColor: "#e7e5e4" }) }}>
+      {title ? <Text style={{ ...label, marginBottom: 5 }}>{title}</Text> : null}
+      {children}
+    </View>
+  );
+  const blocks = [];
+  if (cells.length) blocks.push(group(null, (
+    <View style={{ flexDirection: "row", gap: 14 }}>
+      {cells.map(([k, v]) => (
+        <View key={k} style={{ flexGrow: k === "N° document" ? 1.6 : 1, flexBasis: 0 }}>
+          <Text style={label}>{k}</Text>
+          <Text style={{ fontSize: compact ? 10 : 11.5, fontWeight: "bold", color: "#292524", marginTop: 2, fontFamily }}>{String(v)}</Text>
+        </View>
+      ))}
+    </View>
+  ), true));
+  if (parties.length) blocks.push(group("Intervenants", (
+    <View style={{ flexDirection: "row", flexWrap: "wrap", rowGap: 8 }}>
+      {parties.map((p, i) => (
+        <View key={i} style={{ width: compact ? "25%" : "33.33%", flexDirection: "row", alignItems: "center", gap: 6, paddingRight: 8 }}>
+          {identity.show.logos && p.logo ? <Image src={p.logo} style={{ width: compact ? 30 : 40, height: compact ? 20 : 26, objectFit: "contain" }} /> : null}
+          <View style={{ flex: 1 }}>
+            <Text hyphenationCallback={wholeWords} style={{ fontSize: 7, color: "#78716c", fontFamily }}>{p.role}</Text>
+            <Text hyphenationCallback={wholeWords} style={{ fontSize: compact ? 8.5 : 9.5, fontWeight: "bold", color: "#292524", marginTop: 1, fontFamily }}>{p.name}</Text>
+            {p.detail && !compact ? <Text hyphenationCallback={wholeWords} style={{ fontSize: 7.5, color: "#78716c", marginTop: 1, fontFamily }}>{p.detail}</Text> : null}
+          </View>
+        </View>
+      ))}
+    </View>
+  ), !blocks.length));
+  if (visa.length) blocks.push(group("Visa", (
+    <View style={{ flexDirection: "row", gap: 14 }}>
+      {visa.map(([k, v]) => (
+        <View key={k} style={{ flexGrow: 1, flexBasis: 0 }}>
+          <Text style={{ fontSize: 7, color: "#78716c", fontFamily }}>{k}</Text>
+          <Text style={{ fontSize: compact ? 8.5 : 9.5, color: "#292524", marginTop: 2, paddingBottom: compact ? 6 : 12, borderBottomWidth: 0.75, borderBottomColor: "#d6d3d1", fontFamily }}>{v || " "}</Text>
+        </View>
+      ))}
+    </View>
+  ), !blocks.length));
+  return (
+    <View wrap={false} style={{ backgroundColor: "#fafaf9", borderRadius: 6, borderLeftWidth: 4, borderLeftColor: primaryColor, paddingVertical: compact ? 8 : 12, paddingHorizontal: 14, marginBottom: compact ? 12 : 16 }}>
+      {blocks.map((b, i) => <View key={i}>{b}</View>)}
+    </View>
+  );
+};
+
+const DocIdentityBlock = ({ identity, primaryColor, fontFamily, compact = false, framed = true }) => {
+  if (!identity) return null;
+  if (!framed) return <DocIdentityPlain identity={identity} primaryColor={primaryColor} fontFamily={fontFamily} compact={compact} />;
+  const cells = identity.show.identity ? [
+    ["N° document", identity.number],
+    ["Indice", identity.revision],
+    ["Phase", identity.phase],
+    ["Date", identity.date],
+  ].filter(([, v]) => v) : [];
+  const parties = identity.show.parties ? identity.parties || [] : [];
+  const visa = identity.show.visa ? VISA_LABELS.map(([k, label]) => [label, identity.visa?.[k] || ""]) : [];
+  if (!cells.length && !parties.length && !visa.length) return null;
+  const perRow = compact ? 4 : 3;
+  const partyRows = [];
+  for (let i = 0; i < parties.length; i += perRow) partyRows.push(parties.slice(i, i + perRow));
+  const label = { fontSize: compact ? 6.5 : 7, fontWeight: "bold", color: "#57534e", textTransform: "uppercase", letterSpacing: 0.6, fontFamily };
+  const band = (title, first) => (
+    <View style={{ backgroundColor: tint(primaryColor), paddingVertical: 3, paddingHorizontal: 8, ...(first ? {} : { borderTopWidth: 1, borderTopColor: FRAME }), borderBottomWidth: 1, borderBottomColor: FRAME_LIGHT }}>
+      <Text style={{ fontSize: 7, fontWeight: "bold", color: primaryColor, textTransform: "uppercase", letterSpacing: 1, fontFamily }}>{title}</Text>
+    </View>
+  );
+  const sections = [];
+  if (cells.length) sections.push(
+    <View key="id" style={{ flexDirection: "row" }}>
+      {cells.map(([k, v], i) => (
+        <View key={k} style={{ flex: k === "N° document" ? 1.6 : 1, paddingVertical: compact ? 4 : 6, paddingHorizontal: 8, ...(i ? { borderLeftWidth: 1, borderLeftColor: FRAME_LIGHT } : {}) }}>
+          <Text style={label}>{k}</Text>
+          <Text style={{ fontSize: compact ? 9 : 10.5, fontWeight: "bold", color: "#1c1917", marginTop: 2, fontFamily }}>{String(v)}</Text>
+        </View>
+      ))}
+    </View>
+  );
+  if (parties.length) sections.push(
+    <View key="parties">
+      {band("Intervenants", !sections.length)}
+      {partyRows.map((row, r) => (
+        <View key={r} style={{ flexDirection: "row", ...(r ? { borderTopWidth: 1, borderTopColor: FRAME_LIGHT } : {}) }}>
+          {Array.from({ length: perRow }, (_, i) => row[i] || null).map((p, i) => (
+            <View key={i} style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: compact ? 4 : 6, paddingHorizontal: 8, minHeight: compact ? 30 : 42, ...(i ? { borderLeftWidth: 1, borderLeftColor: FRAME_LIGHT } : {}) }}>
+              {p && identity.show.logos && p.logo ? (
+                <Image src={p.logo} style={{ width: compact ? 30 : 42, height: compact ? 20 : 28, objectFit: "contain" }} />
+              ) : null}
+              {p ? (
+                <View style={{ flex: 1 }}>
+                  <Text hyphenationCallback={wholeWords} style={label}>{p.role}</Text>
+                  <Text hyphenationCallback={wholeWords} style={{ fontSize: compact ? 8 : 9, fontWeight: "bold", color: "#1c1917", marginTop: 1, fontFamily }}>{p.name}</Text>
+                  {p.detail && !compact ? <Text hyphenationCallback={wholeWords} style={{ fontSize: 7.5, color: "#57534e", marginTop: 1, fontFamily }}>{p.detail}</Text> : null}
+                </View>
+              ) : null}
+            </View>
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+  if (visa.length) sections.push(
+    <View key="visa">
+      {band("Visa", !sections.length)}
+      <View style={{ flexDirection: "row" }}>
+        {visa.map(([k, v], i) => (
+          <View key={k} style={{ flex: 1, paddingVertical: compact ? 4 : 6, paddingHorizontal: 8, minHeight: compact ? 30 : 46, ...(i ? { borderLeftWidth: 1, borderLeftColor: FRAME_LIGHT } : {}) }}>
+            <Text style={label}>{k}</Text>
+            <Text style={{ fontSize: compact ? 8 : 9, color: "#1c1917", marginTop: 2, fontFamily }}>{v || " "}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+  return (
+    <View wrap={false} style={{ borderWidth: 1.5, borderColor: FRAME, marginBottom: compact ? 12 : 16 }}>
+      {sections}
+    </View>
+  );
+};
+
 const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionTitles, scopeLots = [], coverStats = null }) => {
   if (!config?.coverPage?.enabled) return null;
   const primaryColor    = config?.primaryColor || "#44403c";
@@ -1266,8 +1405,13 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
           </View>
         )}
 
+        {/* Cartouche : identité, intervenants, visa */}
+        <View style={{ marginTop: "auto" }}>
+          <DocIdentityBlock identity={config.docIdentity} primaryColor={primaryColor} fontFamily={fontFamily} framed={isCartouche(config)} />
+        </View>
+
         {/* Footer */}
-        <View style={{ marginTop: "auto", paddingTop: 20, borderTopWidth: 1, borderTopColor: "#e7e5e4", flexDirection: "row", justifyContent: "space-between" }}>
+        <View style={{ marginTop: config.docIdentity ? 0 : "auto", paddingTop: 20, borderTopWidth: 1, borderTopColor: "#e7e5e4", flexDirection: "row", justifyContent: "space-between" }}>
           <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>{selectedProject?.organizations?.name || "Organisation"}</Text>
           <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>{new Date().toLocaleDateString("fr-FR")}</Text>
         </View>
@@ -1293,12 +1437,20 @@ const PageHeader = ({ templateConfig, selectedProject, primaryColor, fontFamily,
   </View>
 )
 
+// Référence du document en pied de page : « RR-012 · Ind. B ».
+const docRef = (config) => {
+  const id = config?.docIdentity;
+  if (!id?.show?.footer || !id.number) return null;
+  return [id.number, id.revision ? `Ind. ${id.revision}` : null].filter(Boolean).join(" · ");
+};
+
 const PageFooter = ({ templateConfig, selectedProject, fontFamily }) => isCartouche(templateConfig) ? (
   // Cartouche de pied de page : une ligne de cases encadrées.
   <View fixed style={{ position: "absolute", bottom: 8, left: 32, right: 32, height: FOOTER_HEIGHT - 12, flexDirection: "row", borderWidth: 1, borderColor: FRAME, backgroundColor: "white" }}>
     {[
       templateConfig.footer?.showProjectInfo ? selectedProject?.name || "Projet" : null,
       templateConfig.reportTitle || null,
+      docRef(templateConfig),
       templateConfig.footer?.showCompanyInfo ? selectedProject?.organizations?.name || "Organisation" : null,
       templateConfig.footer?.customText || null,
     ].filter(Boolean).map((t, i) => (
@@ -1318,6 +1470,7 @@ const PageFooter = ({ templateConfig, selectedProject, fontFamily }) => isCartou
       {templateConfig.footer?.showProjectInfo && <Text style={{ fontSize: 8, color: "#78716c", fontFamily }}>{selectedProject?.name || "Projet"}</Text>}
       {templateConfig.footer?.showCompanyInfo && <Text style={{ fontSize: 8, color: "#78716c", fontFamily }}>{selectedProject?.organizations?.name || "Organisation"}</Text>}
       {templateConfig.footer?.customText      && <Text style={{ fontSize: 8, color: "#78716c", fontFamily }}>{templateConfig.footer.customText}</Text>}
+      {docRef(templateConfig) && <Text style={{ fontSize: 8, fontWeight: "bold", color: "#57534e", fontFamily }}>{docRef(templateConfig)}</Text>}
     </View>
     {templateConfig.footer?.showPageNumbers && (
       <Text style={{ fontSize: 8, color: "#78716c", fontFamily }} render={({ pageNumber, totalPages }) => `${pageNumber} / ${totalPages}`} />
@@ -1360,7 +1513,9 @@ export default function PdfReportServer({
   const sectionOrder      = (() => {
     const declared = templateConfig.sectionOrder || DEFAULT_SECTION_ORDER;
     // Sans page de garde, le lot du rapport ouvre la première page.
-    const base = scopeLots.length && !templateConfig.coverPage?.enabled ? ['scope', ...declared] : declared;
+    const noCover = !templateConfig.coverPage?.enabled;
+    const lead = [noCover && templateConfig.docIdentity ? 'identity' : null, noCover && scopeLots.length ? 'scope' : null].filter(Boolean);
+    const base = [...lead, ...declared];
     if (!isProgress) return base;
     const extra = ["progressLots", "progressAttention", "progressMilestones", "progressWorkforce", "gantt"].filter((id) => !base.includes(id));
     const at = base.indexOf("summary") + 1;
@@ -1628,6 +1783,9 @@ export default function PdfReportServer({
 
       case 'scope':
         return <ScopeBanner key="scope" scopeLots={scopeLots} primaryColor={primaryColor} fontFamily={fontFamily} />;
+
+      case 'identity':
+        return <DocIdentityBlock key="identity" identity={templateConfig.docIdentity} primaryColor={primaryColor} fontFamily={fontFamily} framed={cartouche} compact />;
 
       case 'progressWorkforce': {
         const rows = progressContent?.workforce || [];
