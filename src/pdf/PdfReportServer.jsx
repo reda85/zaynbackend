@@ -153,6 +153,72 @@ const hasRichTextContent = (doc) => {
 }
 
 // ── Section title style helper ────────────────────────────────────────────────
+// ── Design « cartouches » : tout en tableaux encadrés ─────────────────────────
+const FRAME = "#57534e";          // trait des cadres
+const FRAME_LIGHT = "#a8a29e";    // traits intérieurs
+// Teinte claire d'une couleur (#rrggbb), pour les bandeaux d'en-tête.
+const tint = (hex, amount = 0.88) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+  if (!m) return "#f5f5f4";
+  const n = parseInt(m[1], 16);
+  const mix = (c) => Math.round(c + (255 - c) * amount);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(mix);
+  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+};
+const isCartouche = (config) => config?.design === "cartouches";
+
+/**
+ * Fiche encadrée : un bandeau (n°, titre, statut), des lignes libellé / valeur,
+ * un encart à droite (aperçu du plan) et des rangées pleine largeur (photos,
+ * commentaires). Ne se coupe pas entre deux pages.
+ */
+const CartoucheCard = ({ index, title, badge, rows = [], aside = null, asideWidth = 0, bands = [], primaryColor, fontFamily }) => (
+  <View wrap={false} style={{ borderWidth: 1, borderColor: FRAME, marginBottom: 10 }}>
+    <View style={{ flexDirection: "row", alignItems: "stretch", backgroundColor: tint(primaryColor), borderBottomWidth: 1, borderBottomColor: FRAME }}>
+      {index != null && (
+        <View style={{ width: 34, borderRightWidth: 1, borderRightColor: FRAME, alignItems: "center", justifyContent: "center", paddingVertical: 5 }}>
+          <Text style={{ fontSize: 10, fontWeight: "bold", color: primaryColor, fontFamily }}>{String(index)}</Text>
+        </View>
+      )}
+      <View style={{ flex: 1, paddingVertical: 5, paddingHorizontal: 8, justifyContent: "center" }}>
+        <Text style={{ fontSize: 10.5, fontWeight: "bold", color: "#1c1917", fontFamily }}>{title}</Text>
+      </View>
+      {badge ? (
+        <View style={{ borderLeftWidth: 1, borderLeftColor: FRAME, paddingHorizontal: 8, justifyContent: "center" }}>{badge}</View>
+      ) : null}
+    </View>
+    {(rows.length > 0 || aside) && (
+      <View style={{ flexDirection: "row" }}>
+        <View style={{ flex: 1 }}>
+          {rows.map(([label, value], i) => (
+            <View key={label} style={{ flexDirection: "row", ...(i < rows.length - 1 ? { borderBottomWidth: 1, borderBottomColor: FRAME_LIGHT } : {}) }}>
+              <View style={{ width: 86, paddingVertical: 4, paddingHorizontal: 6, backgroundColor: "#fafaf9", borderRightWidth: 1, borderRightColor: FRAME_LIGHT }}>
+                <Text style={{ fontSize: 8, fontWeight: "bold", color: "#44403c", fontFamily }}>{label}</Text>
+              </View>
+              <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 6, justifyContent: "center" }}>
+                {typeof value === "string" || typeof value === "number"
+                  ? <Text style={{ fontSize: 8.5, color: "#292524", fontFamily }}>{String(value)}</Text>
+                  : value}
+              </View>
+            </View>
+          ))}
+        </View>
+        {aside ? (
+          <View style={{ width: asideWidth, borderLeftWidth: 1, borderLeftColor: FRAME, padding: 6, alignItems: "center", justifyContent: "center" }}>{aside}</View>
+        ) : null}
+      </View>
+    )}
+    {bands.map(([label, content]) => (
+      <View key={label} style={{ borderTopWidth: 1, borderTopColor: FRAME }}>
+        <View style={{ paddingVertical: 3, paddingHorizontal: 6, backgroundColor: "#fafaf9", borderBottomWidth: 1, borderBottomColor: FRAME_LIGHT }}>
+          <Text style={{ fontSize: 8, fontWeight: "bold", color: "#44403c", fontFamily }}>{label}</Text>
+        </View>
+        <View style={{ padding: 6 }}>{content}</View>
+      </View>
+    ))}
+  </View>
+);
+
 const getSectionTitleStyle = (sectionTitles, primaryColor, fontFamily) => {
   const st        = sectionTitles || {}
   const sizeMap   = { small: 9, medium: 11, large: 14 }
@@ -161,6 +227,17 @@ const getSectionTitleStyle = (sectionTitles, primaryColor, fontFamily) => {
   const underline = st.titleUnderline ?? false
   // Couleur du titre : celle du modèle, gris foncé ou une couleur choisie.
   const color = st.titleColor === 'dark' ? '#292524' : st.titleColor === 'custom' && st.titleCustomColor ? st.titleCustomColor : primaryColor
+  if (st.design === 'cartouches') {
+    // Bandeau encadré, teinté, en tête de section.
+    return {
+      containerStyle: { borderWidth: 1, borderColor: FRAME, backgroundColor: tint(primaryColor), paddingVertical: 5, paddingHorizontal: 8, marginBottom: 8 },
+      textStyle: {
+        fontSize: Math.min(fontSize, 12), fontWeight: "bold", color,
+        textTransform: "uppercase", letterSpacing: 0.5,
+        textDecoration: underline ? "underline" : "none", fontFamily,
+      },
+    }
+  }
   return {
     containerStyle: showBar
       ? { borderLeftWidth: 3, borderLeftColor: color, paddingLeft: 8, marginBottom: 12 }
@@ -415,6 +492,71 @@ const ListView = ({ selectedPins, categories, statuses, fields: rawFields, confi
   const snapshotSizeMap = { small: { width: 100, height: 100 }, medium: { width: 120, height: 120 }, large: { width: 140, height: 140 }, xlarge: { width: 210, height: 210 } };
   const snapshotSize    = snapshotSizeMap[config?.listView?.snapshotSize || 'large'];
   const primaryColor    = config?.primaryColor || "#44403c";
+  if (isCartouche(config)) {
+    const photoW = Math.min(snapshotSize.width, 120);
+    return (
+      <>
+        {selectedPins.map((pin, index) => {
+          const category = categories.find((c) => String(c.id) === String(pin.category_id));
+          const status   = statuses.find((s) => s.id === pin.status_id);
+          const comments = (pin.comments || []).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+          const rows = [
+            ["Référence", `${pin.projects?.project_number ?? ""}-${pin.pin_number ?? ""}`],
+            pin.type && (!config?.reportKind || config.reportKind === "libre") ? ["Nature", PIN_TYPE_LABELS[pin.type] ?? pin.type] : null,
+            fields.category && pin.category_id ? ["Lot", `${category?.name || "-"}${category?.entreprises?.name ? ` · ${category.entreprises.name}` : ""}`] : null,
+            fields.createdBy ? ["Créé par", pin.created_by?.name || "-"] : null,
+            fields.assignedTo ? ["Assigné à", pin.assigned_to?.name || "-"] : null,
+            showStart(fields) ? ["Début", fmtDay(pin.date_debut)] : null,
+            fields.dueDate ? ["Échéance", pin.due_date ? new Date(pin.due_date).toLocaleDateString("fr-FR") : "-"] : null,
+            showProgress(fields) ? ["Avancement", <ProgressCell value={pin.avancement} fontFamily={fontFamily} width={60} color={primaryColor} />] : null,
+            fields.description ? ["Description", pin.note || "-"] : null,
+            fields.snapshot && pin.pdf_name ? ["Plan", pin.pdf_name] : null,
+          ].filter(Boolean);
+          const photos = fields.photos ? pin.pins_photos || [] : [];
+          const bands = [
+            photos.length ? ["Photos", (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                {photos.map((photo, i) => (
+                  <View key={i} style={{ width: photoW }}>
+                    <Image src={photo.public_url} style={{ width: photoW, height: photoW * 0.75, objectFit: "cover", borderWidth: 1, borderColor: FRAME_LIGHT }} />
+                    {photo.description ? <Text style={{ fontSize: 7, color: "#57534e", marginTop: 2, fontFamily }}>{photo.description}</Text> : null}
+                  </View>
+                ))}
+              </View>
+            )] : null,
+            comments.length ? ["Commentaires", (
+              <View style={{ gap: 4 }}>
+                {comments.map((c, ci) => (
+                  <Text key={ci} style={{ fontSize: 8, color: "#44403c", lineHeight: 1.4, fontFamily }}>
+                    <Text style={{ fontWeight: "bold", color: "#292524" }}>{c.username || c.created_by?.name || "Utilisateur"}</Text>
+                    {c.created_at ? ` (${new Date(c.created_at).toLocaleDateString("fr-FR")})` : ""} : {c.comment || ""}
+                  </Text>
+                ))}
+              </View>
+            )] : null,
+          ].filter(Boolean);
+          return (
+            <CartoucheCard
+              key={pin.id || index}
+              index={startIndex + index + 1}
+              title={pin?.name || "Sans nom"}
+              badge={fields.status ? (
+                <View style={{ backgroundColor: status?.color || "#666", borderRadius: 9999, paddingVertical: 2, paddingHorizontal: 7 }}>
+                  <Text style={{ fontSize: 7.5, color: "white", fontFamily }}>{status?.name || "Inconnu"}</Text>
+                </View>
+              ) : null}
+              rows={rows}
+              aside={fields.snapshot && pin.snapshot ? <Image src={pin.snapshot} style={{ width: snapshotSize.width, height: snapshotSize.height, objectFit: "cover" }} /> : null}
+              asideWidth={snapshotSize.width + 12}
+              bands={bands}
+              primaryColor={primaryColor}
+              fontFamily={fontFamily}
+            />
+          );
+        })}
+      </>
+    );
+  }
   return (
     <>
       {selectedPins.map((pin, index) => {
@@ -742,6 +884,43 @@ const VisiteView = ({ selectedPins, config, fontFamily, startIndex = 0 }) => {
   const perRow = config?.tasks?.photosPerRow ?? 3;
   const photoW = (CONTENT_WIDTH - GAP * (perRow - 1)) / perRow;
   if (!selectedPins.length) return <Text style={{ fontSize: 9, color: "#a8a29e", fontFamily }}>Aucune observation.</Text>;
+  if (isCartouche(config)) {
+    const w = (CONTENT_WIDTH - 12 - GAP * (perRow - 1)) / perRow;
+    return (
+      <View style={{ marginTop: 4 }}>
+        {selectedPins.map((pin, index) => {
+          const photos = pin.pins_photos || [];
+          return (
+            <CartoucheCard
+              key={pin.id || index}
+              index={startIndex + index + 1}
+              title={pin.name || "Observation"}
+              rows={[
+                ["Référence", `${pin.projects?.project_number ?? ""}-${pin.pin_number ?? ""}`],
+                ["Constatée le", `${fmtDay(pin.created_at)}${pin.created_by?.name ? ` par ${pin.created_by.name}` : ""}`],
+                pin.pdf_name ? ["Localisation", pin.pdf_name] : null,
+                ["Description", pin.note || "-"],
+              ].filter(Boolean)}
+              aside={pin.snapshot ? <Image src={pin.snapshot} style={{ width: 118, height: 118, objectFit: "cover" }} /> : null}
+              asideWidth={130}
+              bands={photos.length ? [["Photos", (
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: GAP }}>
+                  {photos.map((photo, i) => (
+                    <View key={photo.id || i} style={{ width: w }}>
+                      <Image src={photo.public_url} style={{ width: w, height: w * 0.75, objectFit: "cover", borderWidth: 1, borderColor: FRAME_LIGHT }} />
+                      {photo.description ? <Text style={{ fontSize: 7.5, color: "#44403c", marginTop: 2, fontFamily }}>{photo.description}</Text> : null}
+                    </View>
+                  ))}
+                </View>
+              )]] : []}
+              primaryColor={primaryColor}
+              fontFamily={fontFamily}
+            />
+          );
+        })}
+      </View>
+    );
+  }
   return (
     <View style={{ marginTop: 8 }}>
       {selectedPins.map((pin, index) => {
@@ -964,6 +1143,37 @@ const ScopeBanner = ({ scopeLots, primaryColor, fontFamily }) => {
   );
 };
 
+// Page de garde en cartouche : titre du rapport en bandeau, puis un tableau
+// projet / adresse / date / période / lots / entreprises.
+const CoverCartouche = ({ config, primaryColor, selectedProject, scopeLots = [], fontFamily }) => {
+  const t = scopeLots.length ? scopeText(scopeLots) : null;
+  const rows = [
+    ["Projet", selectedProject?.name || "Projet"],
+    selectedProject?.adress ? ["Adresse", selectedProject.adress] : null,
+    ["Date", new Date().toLocaleDateString("fr-FR")],
+    config.period ? ["Période", periodLabel(config.period)] : null,
+    t ? [t.lotLabel, t.lots] : null,
+    t?.companies ? [t.companyLabel, t.companies] : null,
+  ].filter(Boolean);
+  return (
+    <View style={{ borderWidth: 1.5, borderColor: FRAME, marginBottom: 32 }}>
+      <View style={{ backgroundColor: tint(primaryColor), paddingVertical: 16, paddingHorizontal: 14, borderBottomWidth: 1.5, borderBottomColor: FRAME, alignItems: "center" }}>
+        <Text style={{ fontSize: 22, fontWeight: "bold", color: primaryColor, textTransform: "uppercase", letterSpacing: 1, textAlign: "center", fontFamily }}>{config.reportTitle || "Rapport"}</Text>
+      </View>
+      {rows.map(([label, value], i) => (
+        <View key={label} style={{ flexDirection: "row", ...(i < rows.length - 1 ? { borderBottomWidth: 1, borderBottomColor: FRAME_LIGHT } : {}) }}>
+          <View style={{ width: 120, paddingVertical: 8, paddingHorizontal: 10, backgroundColor: "#fafaf9", borderRightWidth: 1, borderRightColor: FRAME_LIGHT }}>
+            <Text style={{ fontSize: 9, fontWeight: "bold", color: "#44403c", textTransform: "uppercase", fontFamily }}>{label}</Text>
+          </View>
+          <View style={{ flex: 1, paddingVertical: 8, paddingHorizontal: 10 }}>
+            <Text style={{ fontSize: 11, fontWeight: i === 0 ? "bold" : "normal", color: "#1c1917", fontFamily }}>{value}</Text>
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+};
+
 const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionTitles, scopeLots = [], coverStats = null }) => {
   if (!config?.coverPage?.enabled) return null;
   const primaryColor    = config?.primaryColor || "#44403c";
@@ -1001,8 +1211,12 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
         </View>
 
         {/* Title */}
+        {isCartouche(config) ? (
+          <CoverCartouche config={config} primaryColor={primaryColor} selectedProject={selectedProject} scopeLots={config?.coverPage?.showScope === false ? [] : scopeLots} fontFamily={fontFamily} />
+        ) : <>
         <CoverTitle config={config} primaryColor={primaryColor} projectName={selectedProject?.name} fontFamily={fontFamily} />
         <CoverScope scopeLots={config?.coverPage?.showScope === false ? [] : scopeLots} primaryColor={(config?.coverPage?.titleColor || 'primary') === 'custom' ? (config.coverPage.titleCustomColor || primaryColor) : primaryColor} align={config?.coverPage?.titleAlign} fontFamily={fontFamily} />
+        </>}
 
         {/* Project photo */}
         {config.coverPage?.showProjectPhoto && projectPhotoUrl && (
@@ -1042,7 +1256,9 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
 
         {/* Résumé : chiffres du rapport */}
         {config.coverPage?.showSummary && coverStats?.lines?.length > 0 && (
-          <View style={{ backgroundColor: "#f5f5f4", padding: 20, borderRadius: 8, borderLeftWidth: 4, borderLeftColor: primaryColor, marginBottom: 24 }}>
+          <View style={isCartouche(config)
+            ? { borderWidth: 1, borderColor: FRAME, padding: 14, marginBottom: 24 }
+            : { backgroundColor: "#f5f5f4", padding: 20, borderRadius: 8, borderLeftWidth: 4, borderLeftColor: primaryColor, marginBottom: 24 }}>
             <Text style={{ fontSize: 9, fontWeight: "bold", color: primaryColor, marginBottom: 6, fontFamily }}>RÉSUMÉ</Text>
             {coverStats.lines.map((line, i) => (
               <Text key={i} style={{ fontSize: 11, color: "#44403c", marginTop: i ? 3 : 0, fontFamily }}>{line}</Text>
@@ -1060,7 +1276,9 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
   );
 };
 const PageHeader = ({ templateConfig, selectedProject, primaryColor, fontFamily, hasLogo, hasClientLogo, logoH, clientLogoH }) => (
-  <View fixed style={{ position: "absolute", top: 0, left: 0, right: 0, height: HEADER_HEIGHT, paddingHorizontal: 32, paddingVertical: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", borderBottomWidth: 1, borderBottomColor: "#e7e5e4" }}>
+  <View fixed style={isCartouche(templateConfig)
+    ? { position: "absolute", top: 8, left: 32, right: 32, height: HEADER_HEIGHT - 12, paddingHorizontal: 10, paddingVertical: 6, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", borderWidth: 1, borderColor: FRAME }
+    : { position: "absolute", top: 0, left: 0, right: 0, height: HEADER_HEIGHT, paddingHorizontal: 32, paddingVertical: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", borderBottomWidth: 1, borderBottomColor: "#e7e5e4" }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
       {hasLogo && <Image src={templateConfig.header.logoUrl} style={{ height: logoH, objectFit: "contain" }} />}
       <View>
@@ -1075,7 +1293,26 @@ const PageHeader = ({ templateConfig, selectedProject, primaryColor, fontFamily,
   </View>
 )
 
-const PageFooter = ({ templateConfig, selectedProject, fontFamily }) => (
+const PageFooter = ({ templateConfig, selectedProject, fontFamily }) => isCartouche(templateConfig) ? (
+  // Cartouche de pied de page : une ligne de cases encadrées.
+  <View fixed style={{ position: "absolute", bottom: 8, left: 32, right: 32, height: FOOTER_HEIGHT - 12, flexDirection: "row", borderWidth: 1, borderColor: FRAME, backgroundColor: "white" }}>
+    {[
+      templateConfig.footer?.showProjectInfo ? selectedProject?.name || "Projet" : null,
+      templateConfig.reportTitle || null,
+      templateConfig.footer?.showCompanyInfo ? selectedProject?.organizations?.name || "Organisation" : null,
+      templateConfig.footer?.customText || null,
+    ].filter(Boolean).map((t, i) => (
+      <View key={i} style={{ flex: 1, paddingHorizontal: 6, justifyContent: "center", ...(i ? { borderLeftWidth: 1, borderLeftColor: FRAME_LIGHT } : {}) }}>
+        <Text style={{ fontSize: 7.5, color: "#44403c", fontFamily }}>{t}</Text>
+      </View>
+    ))}
+    {templateConfig.footer?.showPageNumbers && (
+      <View style={{ width: 54, borderLeftWidth: 1, borderLeftColor: FRAME, alignItems: "center", justifyContent: "center" }}>
+        <Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }} render={({ pageNumber, totalPages }) => `${pageNumber} / ${totalPages}`} />
+      </View>
+    )}
+  </View>
+) : (
   <View fixed style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: FOOTER_HEIGHT, paddingHorizontal: 32, paddingVertical: 8, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderTopWidth: 1, borderTopColor: "#e7e5e4", backgroundColor: "white" }}>
     <View style={{ flexDirection: "row", gap: 16 }}>
       {templateConfig.footer?.showProjectInfo && <Text style={{ fontSize: 8, color: "#78716c", fontFamily }}>{selectedProject?.name || "Projet"}</Text>}
@@ -1112,7 +1349,9 @@ export default function PdfReportServer({
   const templateConfig    = normalizeConfig(config, displayMode);
   const primaryColor      = templateConfig.primaryColor || "#44403c";
   const fontFamily        = fontFamilyMap[templateConfig.fontFamily] || "Helvetica";
-  const sectionTitles     = templateConfig.sectionTitles || {};
+  const cartouche         = isCartouche(templateConfig);
+  // Le design passe par le style des titres, que reçoivent toutes les sections.
+  const sectionTitles     = { ...(templateConfig.sectionTitles || {}), ...(cartouche ? { design: "cartouches" } : {}) };
   // Rapport d'avancement : synthèse, lots, retards, jalons et planning se
   // placent après le résumé, avant le détail des tâches.
   const isProgress        = templateConfig.reportKind === "avancement";
@@ -1246,7 +1485,49 @@ export default function PdfReportServer({
       case 'summary':
         if (!templateConfig.summary?.enabled) return null;
         if (isProgress) {
-          return <ProgressSummary key="summary" model={progressModel} period={templateConfig.period ? periodLabel(templateConfig.period) : null} title={templateConfig.reportTitle} primaryColor={primaryColor} fontFamily={fontFamily} backgroundColor={templateConfig.summary.backgroundColor} show={opts('summary')} />;
+          return <ProgressSummary key="summary" model={progressModel} period={templateConfig.period ? periodLabel(templateConfig.period) : null} title={templateConfig.reportTitle} primaryColor={primaryColor} fontFamily={fontFamily} backgroundColor={templateConfig.summary.backgroundColor} show={opts('summary')} framed={cartouche} />;
+        }
+        if (cartouche) {
+          const periodText = templateConfig.period ? periodLabel(templateConfig.period) : selectedPins.length > 0 ? (() => {
+            const dates = selectedPins.map((p) => new Date(p.created_at));
+            return `${new Date(Math.min(...dates)).toLocaleDateString("fr-FR")} - ${new Date(Math.max(...dates)).toLocaleDateString("fr-FR")}`;
+          })() : "-";
+          const cells = [
+            templateConfig.summary?.showPeriod ? ["Période", periodText, 2] : null,
+            templateConfig.summary?.showTotalCount ? ["Total", String(selectedPins.length), 1] : null,
+            templateConfig.summary?.showOverdueCount ? ["En retard", String(selectedPins.filter(lateChecker(statuses)).length), 1] : null,
+            templateConfig.summary?.showPlanCount ? ["Plans", String(Object.keys(groupBy(selectedPins, "pdf_name")).length), 1] : null,
+          ].filter(Boolean);
+          return (
+            <View key="summary" wrap={false} style={{ borderWidth: 1, borderColor: FRAME, marginBottom: 10 }}>
+              <View style={{ backgroundColor: tint(primaryColor), paddingVertical: 5, paddingHorizontal: 8, borderBottomWidth: cells.length || templateConfig.summary?.showStatusBreakdown ? 1 : 0, borderBottomColor: FRAME }}>
+                <Text style={{ fontSize: 11, fontWeight: "bold", color: primaryColor, textTransform: "uppercase", fontFamily }}>{templateConfig.reportTitle}</Text>
+              </View>
+              {cells.length > 0 && (
+                <View style={{ flexDirection: "row" }}>
+                  {cells.map(([label, value, grow], i) => (
+                    <View key={label} style={{ flexGrow: grow, flexBasis: 0, padding: 6, ...(i < cells.length - 1 ? { borderRightWidth: 1, borderRightColor: FRAME_LIGHT } : {}) }}>
+                      <Text style={{ fontSize: 7.5, fontWeight: "bold", color: "#57534e", textTransform: "uppercase", fontFamily }}>{label}</Text>
+                      <Text style={{ fontSize: 11, fontWeight: "bold", color: "#292524", marginTop: 3, fontFamily }}>{value}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+              {templateConfig.summary?.showStatusBreakdown && (
+                <View style={{ flexDirection: "row", flexWrap: "wrap", borderTopWidth: cells.length ? 1 : 0, borderTopColor: FRAME_LIGHT }}>
+                  {Object.keys(pinsByStatus).map((statusId, i, all) => {
+                    const status = statuses.find((x) => String(x.id) === String(statusId));
+                    return (
+                      <View key={statusId} style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingVertical: 5, paddingHorizontal: 8, ...(i < all.length - 1 ? { borderRightWidth: 1, borderRightColor: FRAME_LIGHT } : {}) }}>
+                        <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: status?.color || "#666" }} />
+                        <Text style={{ fontSize: 8.5, color: "#292524", fontFamily }}>{status?.name || "Inconnu"} : {pinsByStatus[statusId].length}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+          );
         }
         return (
           <View key="summary" style={{ padding: 16, borderRadius: 8, marginBottom: 8, backgroundColor: templateConfig.summary.backgroundColor || "#f5f5f4" }}>

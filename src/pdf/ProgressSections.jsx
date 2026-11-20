@@ -140,7 +140,7 @@ export const sectionOpts = (config, key) => {
 };
 
 // ── Synthèse ─────────────────────────────────────────────────────────────────
-export const ProgressSummary = ({ model, title, period = null, primaryColor, fontFamily, backgroundColor = "#f5f5f4", show = PROGRESS_SECTION_DEFAULTS.summary }) => {
+export const ProgressSummary = ({ model, title, period = null, primaryColor, fontFamily, backgroundColor = "#f5f5f4", show = PROGRESS_SECTION_DEFAULTS.summary, framed = false }) => {
   const Kpi = ({ label, value, sub, color }) => (
     <View style={{ flex: 1, paddingRight: 8 }}>
       <Text style={{ fontSize: 8, fontWeight: "bold", color: "#57534e", fontFamily }}>{label}</Text>
@@ -150,7 +150,9 @@ export const ProgressSummary = ({ model, title, period = null, primaryColor, fon
   );
   const { counts, tasks, nextMilestone, global } = model;
   return (
-    <View wrap={false} style={{ padding: 16, borderRadius: 8, marginBottom: 8, backgroundColor }}>
+    <View wrap={false} style={framed
+      ? { padding: 12, marginBottom: 10, borderWidth: 1, borderColor: "#57534e", backgroundColor: "white" }
+      : { padding: 16, borderRadius: 8, marginBottom: 8, backgroundColor }}>
       <Text style={{ fontSize: 12, fontWeight: "bold", color: primaryColor, fontFamily }}>{title}</Text>
       <Text style={{ fontSize: 8, color: "#78716c", marginTop: 2, marginBottom: 12, fontFamily }}>Situation au {fmtD(model.today)}{period ? `  ·  Période : ${period.charAt(0).toLowerCase()}${period.slice(1)}` : ""}</Text>
       {show.global !== false && <View style={{ flexDirection: "row", alignItems: "flex-end", marginBottom: 14 }}>
