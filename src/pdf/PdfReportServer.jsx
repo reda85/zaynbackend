@@ -1176,10 +1176,71 @@ const CoverCartouche = ({ config, primaryColor, selectedProject, scopeLots = [],
 
 // Cartouche du document : identité (n°, indice, phase, date), intervenants du
 // projet avec leur logo, et visa. Résolu par le serveur dans config.docIdentity.
+// Noms et rôles coupés entre les mots seulement (« Casablanca », pas « Casablan-ca »).
+const wholeWords = (word) => [word];
 const VISA_LABELS = [["redige", "Rédigé par"], ["verifie", "Vérifié par"], ["approuve", "Approuvé par"]];
 
-const DocIdentityBlock = ({ identity, primaryColor, fontFamily, compact = false }) => {
+// Même contenu dans le design standard : sans cadres, sur fond clair avec
+// filet de couleur, comme le bandeau du lot.
+const DocIdentityPlain = ({ identity, primaryColor, fontFamily, compact }) => {
+  const cells = identity.show.identity ? [
+    ["N° document", identity.number], ["Indice", identity.revision], ["Phase", identity.phase], ["Date", identity.date],
+  ].filter(([, v]) => v) : [];
+  const parties = identity.show.parties ? identity.parties || [] : [];
+  const visa = identity.show.visa ? VISA_LABELS.map(([k, label]) => [label, identity.visa?.[k] || ""]) : [];
+  if (!cells.length && !parties.length && !visa.length) return null;
+  const label = { fontSize: 7, fontWeight: "bold", color: primaryColor, textTransform: "uppercase", letterSpacing: 0.8, fontFamily };
+  const group = (title, children, first) => (
+    <View style={{ ...(first ? {} : { marginTop: compact ? 8 : 12, paddingTop: compact ? 8 : 10, borderTopWidth: 1, borderTopColor: "#e7e5e4" }) }}>
+      {title ? <Text style={{ ...label, marginBottom: 5 }}>{title}</Text> : null}
+      {children}
+    </View>
+  );
+  const blocks = [];
+  if (cells.length) blocks.push(group(null, (
+    <View style={{ flexDirection: "row", gap: 14 }}>
+      {cells.map(([k, v]) => (
+        <View key={k} style={{ flexGrow: k === "N° document" ? 1.6 : 1, flexBasis: 0 }}>
+          <Text style={label}>{k}</Text>
+          <Text style={{ fontSize: compact ? 10 : 11.5, fontWeight: "bold", color: "#292524", marginTop: 2, fontFamily }}>{String(v)}</Text>
+        </View>
+      ))}
+    </View>
+  ), true));
+  if (parties.length) blocks.push(group("Intervenants", (
+    <View style={{ flexDirection: "row", flexWrap: "wrap", rowGap: 8 }}>
+      {parties.map((p, i) => (
+        <View key={i} style={{ width: compact ? "25%" : "33.33%", flexDirection: "row", alignItems: "center", gap: 6, paddingRight: 8 }}>
+          {identity.show.logos && p.logo ? <Image src={p.logo} style={{ width: compact ? 30 : 40, height: compact ? 20 : 26, objectFit: "contain" }} /> : null}
+          <View style={{ flex: 1 }}>
+            <Text hyphenationCallback={wholeWords} style={{ fontSize: 7, color: "#78716c", fontFamily }}>{p.role}</Text>
+            <Text hyphenationCallback={wholeWords} style={{ fontSize: compact ? 8.5 : 9.5, fontWeight: "bold", color: "#292524", marginTop: 1, fontFamily }}>{p.name}</Text>
+            {p.detail && !compact ? <Text hyphenationCallback={wholeWords} style={{ fontSize: 7.5, color: "#78716c", marginTop: 1, fontFamily }}>{p.detail}</Text> : null}
+          </View>
+        </View>
+      ))}
+    </View>
+  ), !blocks.length));
+  if (visa.length) blocks.push(group("Visa", (
+    <View style={{ flexDirection: "row", gap: 14 }}>
+      {visa.map(([k, v]) => (
+        <View key={k} style={{ flexGrow: 1, flexBasis: 0 }}>
+          <Text style={{ fontSize: 7, color: "#78716c", fontFamily }}>{k}</Text>
+          <Text style={{ fontSize: compact ? 8.5 : 9.5, color: "#292524", marginTop: 2, paddingBottom: compact ? 6 : 12, borderBottomWidth: 0.75, borderBottomColor: "#d6d3d1", fontFamily }}>{v || " "}</Text>
+        </View>
+      ))}
+    </View>
+  ), !blocks.length));
+  return (
+    <View wrap={false} style={{ backgroundColor: "#fafaf9", borderRadius: 6, borderLeftWidth: 4, borderLeftColor: primaryColor, paddingVertical: compact ? 8 : 12, paddingHorizontal: 14, marginBottom: compact ? 12 : 16 }}>
+      {blocks.map((b, i) => <View key={i}>{b}</View>)}
+    </View>
+  );
+};
+
+const DocIdentityBlock = ({ identity, primaryColor, fontFamily, compact = false, framed = true }) => {
   if (!identity) return null;
+  if (!framed) return <DocIdentityPlain identity={identity} primaryColor={primaryColor} fontFamily={fontFamily} compact={compact} />;
   const cells = identity.show.identity ? [
     ["N° document", identity.number],
     ["Indice", identity.revision],
@@ -1221,9 +1282,9 @@ const DocIdentityBlock = ({ identity, primaryColor, fontFamily, compact = false 
               ) : null}
               {p ? (
                 <View style={{ flex: 1 }}>
-                  <Text style={label}>{p.role}</Text>
-                  <Text style={{ fontSize: compact ? 8 : 9, fontWeight: "bold", color: "#1c1917", marginTop: 1, fontFamily }}>{p.name}</Text>
-                  {p.detail && !compact ? <Text style={{ fontSize: 7.5, color: "#57534e", marginTop: 1, fontFamily }}>{p.detail}</Text> : null}
+                  <Text hyphenationCallback={wholeWords} style={label}>{p.role}</Text>
+                  <Text hyphenationCallback={wholeWords} style={{ fontSize: compact ? 8 : 9, fontWeight: "bold", color: "#1c1917", marginTop: 1, fontFamily }}>{p.name}</Text>
+                  {p.detail && !compact ? <Text hyphenationCallback={wholeWords} style={{ fontSize: 7.5, color: "#57534e", marginTop: 1, fontFamily }}>{p.detail}</Text> : null}
                 </View>
               ) : null}
             </View>
@@ -1346,7 +1407,7 @@ const CoverPage = ({ selectedProject, config, participants, fontFamily, sectionT
 
         {/* Cartouche : identité, intervenants, visa */}
         <View style={{ marginTop: "auto" }}>
-          <DocIdentityBlock identity={config.docIdentity} primaryColor={primaryColor} fontFamily={fontFamily} />
+          <DocIdentityBlock identity={config.docIdentity} primaryColor={primaryColor} fontFamily={fontFamily} framed={isCartouche(config)} />
         </View>
 
         {/* Footer */}
@@ -1724,7 +1785,7 @@ export default function PdfReportServer({
         return <ScopeBanner key="scope" scopeLots={scopeLots} primaryColor={primaryColor} fontFamily={fontFamily} />;
 
       case 'identity':
-        return <DocIdentityBlock key="identity" identity={templateConfig.docIdentity} primaryColor={primaryColor} fontFamily={fontFamily} compact />;
+        return <DocIdentityBlock key="identity" identity={templateConfig.docIdentity} primaryColor={primaryColor} fontFamily={fontFamily} framed={cartouche} compact />;
 
       case 'progressWorkforce': {
         const rows = progressContent?.workforce || [];
