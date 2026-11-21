@@ -31,6 +31,30 @@ const LOT_STATE = {
   todo:    { label: "À venir",   color: "#57534e", bg: "#f5f5f4" },
 };
 
+// Sous-lots d'un lot : leurs tâches, et une synthèse (du premier début à la
+// dernière fin, avancement pondéré par la durée des tâches).
+function splitSubLots(subLots, lotTasks, today) {
+  const ids = new Set(subLots.map((s) => s.id));
+  const byStart = (a, b) => (a.start ?? a.end ?? "9").localeCompare(b.start ?? b.end ?? "9");
+  const subs = subLots.map((s) => {
+    const tasks = lotTasks.filter((t) => t.sous_lot_id === s.id).sort(byStart);
+    let w = 0, p = 0, start = null, end = null;
+    for (const t of tasks) {
+      const a = t.start ?? t.end, b = t.end ?? t.start;
+      if (!a) continue;
+      const d = Math.max(1, dayNum(b) - dayNum(a) + 1);
+      w += d; p += d * t.progress;
+      if (!start || a < start) start = a;
+      if (!end || b > end) end = b;
+    }
+    const progress = w ? Math.round(p / w) : 0;
+    const done = tasks.length > 0 && tasks.every((t) => t.done);
+    const late = Boolean(end && end < today && !done);
+    return { id: s.id, name: s.name, tasks, start, end, progress: done ? 100 : progress, done, late };
+  }).filter((s) => s.tasks.length);
+  return { subLots: subs, directTasks: lotTasks.filter((t) => !ids.has(t.sous_lot_id)).sort(byStart) };
+}
+
 export function buildProgress({ categories = [], pins = [], milestones = [], statuses = [], today = toDay(new Date()) }) {
   const finalId = [...statuses].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).at(-1)?.id;
   const tasks = pins.map((p) => {
@@ -66,6 +90,7 @@ export function buildProgress({ categories = [], pins = [], milestones = [], sta
         realStart: c.date_debut_reelle, realEnd: c.date_fin_reelle,
         progress: done ? 100 : progress, state, lateDays,
         tasks: lotTasks.sort((a, b) => (a.start ?? a.end ?? "9").localeCompare(b.start ?? b.end ?? "9")),
+        ...splitSubLots(c.sous_lots ?? [], lotTasks, today),
         tasksDone: lotTasks.filter((t) => t.done).length,
       };
     })
@@ -310,7 +335,12 @@ export function ganttRows(model, { showTasks = true } = {}) {
   if (model.jalons.length) rows.push({ kind: "jalons", key: "jalons" });
   for (const l of model.lots) {
     rows.push({ kind: "lot", key: `lot-${l.id}`, lot: l });
-    if (showTasks) for (const t of l.tasks) rows.push({ kind: "task", key: `t-${t.id}`, task: t });
+    if (!showTasks) continue;
+    for (const t of l.directTasks ?? l.tasks) rows.push({ kind: "task", key: `t-${t.id}`, task: t });
+    for (const sl of l.subLots ?? []) {
+      rows.push({ kind: "sub", key: `sl-${sl.id}`, sub: sl });
+      for (const t of sl.tasks) rows.push({ kind: "task", key: `t-${t.id}`, task: t, nested: true });
+    }
   }
   if (showTasks && model.orphanTasks.length) {
     rows.push({ kind: "group", key: "orphans", label: "Sans lot" });
@@ -335,7 +365,7 @@ export function ganttRange(model) {
   return { min, max };
 }
 
-const ROW_H = { jalons: 22, lot: 19, task: 14, group: 16 };
+const ROW_H = { jalons: 22, lot: 19, sub: 15, task: 14, group: 16 };
 
 /** Découpe les lignes en pages selon la hauteur disponible. */
 export function paginateGantt(rows, available) {
@@ -345,7 +375,7 @@ export function paginateGantt(rows, available) {
     let rh = ROW_H[r.kind];
     // Un lot (ou un groupe) ne finit pas une page sans sa première tâche.
     const next = rows[i + 1];
-    const keep = (r.kind === "lot" || r.kind === "group") && next?.kind === "task" ? ROW_H.task : 0;
+    const keep = (r.kind === "lot" || r.kind === "group" || r.kind === "sub") && (next?.kind === "task" || next?.kind === "sub") ? ROW_H[next.kind] : 0;
     if (h + rh + keep > available && pages.at(-1).length) { pages.push([]); h = 0; }
     pages.at(-1).push(r); h += rh;
   });
@@ -386,6 +416,24 @@ export const Gantt = ({ rows, range, model, width, primaryColor, fontFamily }) =
     );
   };
 
+  // Sous-lot : barre de synthèse fine, bornée par deux crochets.
+  const SubBar = ({ sub }) => {
+    if (!sub.start) return null;
+    const a = clampX(x(sub.start)), b = clampX(x(sub.end) + chartW / span);
+    const w = Math.max(3, b - a);
+    const c = sub.done ? "#15803d" : sub.late ? "#b91c1c" : "#57534e";
+    const top = (ROW_H.sub - 8) / 2;
+    return (
+      <View style={{ position: "absolute", left: a, top, width: w, height: 8 }}>
+        <View style={{ position: "absolute", left: 0, top: 0, width: w, height: 4, backgroundColor: "#e7e5e4" }}>
+          <View style={{ width: (w * sub.progress) / 100, height: 4, backgroundColor: c }} />
+        </View>
+        <View style={{ position: "absolute", left: 0, top: 0, width: 1.5, height: 8, backgroundColor: c }} />
+        <View style={{ position: "absolute", right: 0, top: 0, width: 1.5, height: 8, backgroundColor: c }} />
+      </View>
+    );
+  };
+
   return (
     <View>
       {/* Axe */}
@@ -412,7 +460,12 @@ export const Gantt = ({ rows, range, model, width, primaryColor, fontFamily }) =
         </View>
         {rows.map((r) => (
           <View key={r.key} style={{ flexDirection: "row", height: ROW_H[r.kind], ...(r.kind === "task" ? {} : { borderBottomWidth: 0.5, borderBottomColor: "#e7e5e4" }) }}>
-            <View style={{ width: LABEL_W, justifyContent: "center", paddingRight: 6, paddingLeft: r.kind === "task" ? 12 : 0 }}>
+            <View style={{ width: LABEL_W, justifyContent: "center", paddingRight: 6, paddingLeft: r.kind === "task" ? (r.nested ? 20 : 12) : r.kind === "sub" ? 8 : 0 }}>
+              {r.kind === "sub" && (
+                <Text style={{ fontSize: 7.5, fontWeight: "bold", color: r.sub.late ? "#b91c1c" : "#44403c", fontFamily }}>
+                  {r.sub.name.slice(0, 34)}<Text style={{ fontWeight: "normal", color: "#78716c" }}>{`  ${r.sub.progress} %`}</Text>
+                </Text>
+              )}
               {r.kind === "jalons" && <Text style={{ fontSize: 8, fontWeight: "bold", color: "#292524", fontFamily }}>Jalons</Text>}
               {r.kind === "group" && <Text style={{ fontSize: 8, fontWeight: "bold", color: "#57534e", fontFamily }}>{r.label}</Text>}
               {r.kind === "lot" && (
@@ -428,6 +481,7 @@ export const Gantt = ({ rows, range, model, width, primaryColor, fontFamily }) =
               {r.kind === "lot" && (
                 <BarRow start={r.lot.plannedStart} end={r.lot.plannedEnd} progress={r.lot.progress} late={r.lot.state === "late"} done={r.lot.state === "done"} h={9} strong />
               )}
+              {r.kind === "sub" && <SubBar sub={r.sub} />}
               {r.kind === "task" && (
                 <BarRow start={r.task.start} end={r.task.end} progress={r.task.progress} late={r.task.late} done={r.task.done} h={6} />
               )}
