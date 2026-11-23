@@ -609,12 +609,25 @@ async function generateReport(body, user = null) {
         else milestones = data || [];
       }
 
+      // Rapport d'avancement : sous-lots du planning (Courant fort, Courant faible…).
+      let sousLots = [];
+      if (kind === "avancement") {
+        const { data, error } = await supabase
+          .from("sous_lots")
+          .select("id, lot_id, name, sort_order")
+          .eq("project_id", projectId)
+          .order("sort_order")
+          .order("created_at");
+        if (error) console.error("   ⚠️ Sous-lots indisponibles:", error.message);
+        else sousLots = data || [];
+      }
+
       if (pinsResult.error) throw pinsResult.error;
       if (categoriesResult.error) throw categoriesResult.error;
       if (statusesResult.error) throw statusesResult.error;
       if (projectResult.error) throw projectResult.error;
 
-      const allCategories = categoriesResult.data || [];
+      const allCategories = (categoriesResult.data || []).map((c) => ({ ...c, sous_lots: sousLots.filter((sl) => sl.lot_id === c.id) }));
       const scopedLots = lotIds.size ? allCategories.filter((c) => lotIds.has(String(c.id))) : [];
       const inScope = (lotId) => !scopedLots.length || lotIds.has(String(lotId));
       const pins = (pinsResult.data || [])
